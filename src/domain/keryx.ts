@@ -31,6 +31,7 @@ export const keryxJobSchema = z.object({
 
 export const keryxPayloadSchema = z
   .object({
+    schema_version: z.literal(1),
     country: z.literal("United States"),
     jobs: z.array(keryxJobSchema).max(100_000),
   })

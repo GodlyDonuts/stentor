@@ -4,7 +4,9 @@ import { keryxPayloadSchema } from "../src/domain/keryx.js";
 describe("Keryx schema", () => {
   it("accepts a canonical listing", () => {
     const result = keryxPayloadSchema.safeParse({
+      schema_version: 1,
       country: "United States",
+      additive_metadata: "accepted",
       jobs: [
         {
           id: "job_123abc",
@@ -25,6 +27,7 @@ describe("Keryx schema", () => {
           missed_runs: 0,
           sources: [{ id: "source", label: "Source", url: "https://example.com" }],
           url_fingerprint: "abc",
+          additive_job_metadata: true,
         },
       ],
     });
@@ -32,7 +35,19 @@ describe("Keryx schema", () => {
   });
 
   it("rejects listings outside the expected country and programs", () => {
-    expect(keryxPayloadSchema.safeParse({ country: "Canada", jobs: [] }).success).toBe(false);
+    expect(
+      keryxPayloadSchema.safeParse({ schema_version: 1, country: "Canada", jobs: [] }).success,
+    ).toBe(false);
+  });
+
+  it("fails closed on a future breaking schema version", () => {
+    expect(
+      keryxPayloadSchema.safeParse({
+        schema_version: 2,
+        country: "United States",
+        jobs: [],
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects duplicate IDs before they reach PostgreSQL", () => {
@@ -57,7 +72,11 @@ describe("Keryx schema", () => {
       url_fingerprint: "abc",
     };
     expect(
-      keryxPayloadSchema.safeParse({ country: "United States", jobs: [listing, listing] }).success,
+      keryxPayloadSchema.safeParse({
+        schema_version: 1,
+        country: "United States",
+        jobs: [listing, listing],
+      }).success,
     ).toBe(false);
   });
 });
