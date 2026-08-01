@@ -11,7 +11,7 @@ services:
     environment:
       POSTGRES_DB: stentor
       POSTGRES_USER: stentor
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stentor}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -24,14 +24,28 @@ services:
     logging: *default-logging
     stop_grace_period: 30s
     mem_limit: 512m
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
 
   bot:
     build: .
     init: true
     restart: unless-stopped
-    env_file: .env
     environment:
-      DATABASE_URL: postgres://stentor:${POSTGRES_PASSWORD:-stentor}@postgres:5432/stentor
+      DISCORD_TOKEN: "${DISCORD_TOKEN:?DISCORD_TOKEN must be set}"
+      DISCORD_APPLICATION_ID: "${DISCORD_APPLICATION_ID:?DISCORD_APPLICATION_ID must be set}"
+      DISCORD_DEV_GUILD_ID: "${DISCORD_DEV_GUILD_ID:-}"
+      DATABASE_URL: "postgres://stentor:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/stentor"
+      DB_POOL_MAX: "${DB_POOL_MAX:-5}"
+      KERYX_URL: "${KERYX_URL:-https://raw.githubusercontent.com/GodlyDonuts/keryx/main/data/jobs.json}"
+      KERYX_POLL_SECONDS: "${KERYX_POLL_SECONDS:-900}"
+      ANNOUNCEMENT_POLL_SECONDS: "${ANNOUNCEMENT_POLL_SECONDS:-5}"
+      SUBSCRIPTION_POLL_SECONDS: "${SUBSCRIPTION_POLL_SECONDS:-5}"
+      DELIVERY_RETENTION_DAYS: "${DELIVERY_RETENTION_DAYS:-90}"
+      HTTP_HOST: "${HTTP_HOST:-0.0.0.0}"
+      HTTP_PORT: "${HTTP_PORT:-3000}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
       NODE_ENV: production
       NODE_OPTIONS: --max-old-space-size=384
     depends_on:
@@ -42,6 +56,14 @@ services:
     logging: *default-logging
     stop_grace_period: 30s
     mem_limit: 512m
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres-data:

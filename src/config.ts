@@ -3,7 +3,10 @@ import { z } from "zod";
 const envSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_APPLICATION_ID: z.string().regex(/^\d+$/),
-  DISCORD_DEV_GUILD_ID: z.string().regex(/^\d+$/).optional(),
+  DISCORD_DEV_GUILD_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().regex(/^\d+$/).optional(),
+  ),
   DATABASE_URL: z.string().min(1),
   DB_POOL_MAX: z.coerce.number().int().min(2).max(20).default(5),
   KERYX_URL: z

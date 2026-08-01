@@ -73,16 +73,28 @@ async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info({ signal }, "Graceful shutdown started");
+  const forcedExit = setTimeout(() => {
+    logger.fatal({ signal }, "Graceful shutdown timed out");
+    process.exit(1);
+  }, 25_000);
+  forcedExit.unref();
   synchronizer.stop();
   announcer.stop();
   subscriptionNotifier.stop();
   metrics.ready.set(0);
-  await Promise.allSettled([http.server.close(), client.destroy(), pool.end()]);
+  try {
+    await Promise.allSettled([http.server.close(), client.destroy(), pool.end()]);
+  } finally {
+    clearTimeout(forcedExit);
+  }
 }
 
 process.once("SIGINT", () => void shutdown("SIGINT").then(() => process.exit(0)));
 process.once("SIGTERM", () => void shutdown("SIGTERM").then(() => process.exit(0)));
-process.on("unhandledRejection", (error) => logger.fatal({ error }, "Unhandled promise rejection"));
+process.on("unhandledRejection", (error) => {
+  logger.fatal({ error }, "Unhandled promise rejection");
+  void shutdown("unhandledRejection").then(() => process.exit(1));
+});
 process.on("uncaughtException", (error) => {
   logger.fatal({ error }, "Uncaught exception");
   void shutdown("uncaughtException").then(() => process.exit(1));

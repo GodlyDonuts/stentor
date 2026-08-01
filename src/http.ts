@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import type { Client } from "discord.js";
 import type { Config } from "./config.js";
 import type { Repository } from "./db/repository.js";
@@ -12,7 +12,10 @@ export function createHttpServer(
   metrics: Metrics,
   logger: Logger,
 ) {
-  const server = Fastify({ loggerInstance: logger, disableRequestLogging: true });
+  const server = Fastify({
+    loggerInstance: logger,
+    logController: new LogController({ disableRequestLogging: true }),
+  });
 
   server.get("/health/live", () => ({ status: "ok" }));
   server.get("/health/ready", async (_request, reply) => {

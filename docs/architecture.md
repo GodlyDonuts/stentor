@@ -37,3 +37,6 @@ Personal state consists of Discord user/guild IDs, named filter settings, delive
 - Keryx link-confidence labels are preserved in every listing.
 - PostgreSQL and health endpoints bind only to VPS loopback.
 - Containers run the application as an unprivileged user and apply migrations under a PostgreSQL advisory lock.
+- The bot filesystem is read-only, Linux capabilities are dropped, and `no-new-privileges` is enforced.
+- Compose explicitly allowlists application variables instead of injecting deployment-only `.env` values.
+- Production startup fails closed when the PostgreSQL or Discord credential is absent.
