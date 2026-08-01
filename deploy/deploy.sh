@@ -40,7 +40,7 @@ restore_previous() {
   fi
 }
 
-docker compose build bot
+docker compose build --pull bot
 docker compose run --rm --no-deps bot node dist/register-commands.js
 if ! docker compose up -d --remove-orphans; then
   restore_previous
