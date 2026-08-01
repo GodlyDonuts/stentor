@@ -1,0 +1,1 @@
+ALTER TABLE "announcements" ADD COLUMN "action" text DEFAULT 'post' NOT NULL;

@@ -1,0 +1,8 @@
+[Unit]
+Description=Recover Stentor when its readiness check fails
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/stentor-watchdog

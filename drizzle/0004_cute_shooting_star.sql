@@ -1,0 +1,1 @@
+CREATE INDEX "subscription_deliveries_history_idx" ON "subscription_deliveries" USING btree ("state","created_at");

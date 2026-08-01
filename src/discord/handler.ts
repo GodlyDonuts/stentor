@@ -1,0 +1,497 @@
+import {
+  EmbedBuilder,
+  MessageFlags,
+  PermissionFlagsBits,
+  escapeMarkdown,
+  type AutocompleteInteraction,
+  type ButtonInteraction,
+  type ChatInputCommandInteraction,
+  type Client,
+  type Interaction,
+} from "discord.js";
+import type { Repository } from "../db/repository.js";
+import type { Job } from "../db/schema.js";
+import { normalizeCsv } from "../domain/filter.js";
+import { nextDigestAt, supportedTimezones, type SupportedTimezone } from "../domain/schedule.js";
+import type { JobSearchFilters } from "../domain/search.js";
+import { validatePublicHttpsUrl } from "../domain/url.js";
+import type { Logger } from "../logger.js";
+import { jobEmbed, searchNavigation, subscriptionEmbed } from "./presentation.js";
+import { SearchSessions } from "./search-sessions.js";
+
+interface HandlerDependencies {
+  client: Client;
+  repository: Repository;
+  logger: Logger;
+  syncNow: () => Promise<{ changed: boolean; discovered: number; baseline: boolean }>;
+  announceNow: () => Promise<void>;
+  notifyNow: () => Promise<void>;
+  enqueuePersonalMatches: (jobs: Job[]) => Promise<number>;
+}
+
+const ephemeral = MessageFlags.Ephemeral;
+
+function configuredSummary(
+  settings: NonNullable<Awaited<ReturnType<Repository["getGuildSettings"]>>>,
+) {
+  const list = (values: string[], fallback: string) =>
+    values.length > 0 ? values.join(", ") : fallback;
+  return new EmbedBuilder()
+    .setColor(settings.paused ? 0xf59e0b : 0x16a085)
+    .setTitle("Stentor configuration")
+    .setDescription(
+      settings.paused ? "⏸️ Announcements are paused." : "✅ Announcements are active.",
+    )
+    .addFields(
+      { name: "Channel", value: `<#${settings.channelId}>`, inline: true },
+      {
+        name: "Ping role",
+        value: settings.pingRoleId ? `<@&${settings.pingRoleId}>` : "None",
+        inline: true,
+      },
+      { name: "Programs", value: list(settings.programs, "All"), inline: true },
+      { name: "Cycles", value: list(settings.cycles, "All") },
+      { name: "Keywords", value: list(settings.keywords, "Any") },
+      { name: "Locations", value: list(settings.locations, "Any") },
+      { name: "Sponsorship", value: settings.sponsorship, inline: true },
+      {
+        name: "Work arrangement",
+        value: settings.remoteOnly ? "Remote only" : "Any",
+        inline: true,
+      },
+      {
+        name: "Application link",
+        value: settings.requireLink ? "Required" : "Optional",
+        inline: true,
+      },
+    )
+    .setTimestamp(settings.updatedAt);
+}
+
+function requireGuild(interaction: ChatInputCommandInteraction): string {
+  if (!interaction.guildId) throw new Error("This command can only be used in a server.");
+  return interaction.guildId;
+}
+
+function requireManageGuild(interaction: ChatInputCommandInteraction): void {
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    throw new Error("You need the Manage Server permission to do that.");
+  }
+}
+
+async function renderSearch(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  repository: Repository,
+  guildId: string,
+  filters: JobSearchFilters,
+  offset: number,
+  token: string,
+): Promise<void> {
+  const results = await repository.searchJobs(guildId, filters, offset, 6);
+  const visible = results.slice(0, 5);
+  const filterLabels = [
+    filters.query ? `“${escapeMarkdown(filters.query)}”` : null,
+    filters.program,
+    filters.cycle,
+    filters.location,
+    filters.remoteOnly ? "remote" : null,
+    filters.sponsorship,
+    filters.requireLink ? "with application links" : null,
+  ].filter((value): value is string => Boolean(value));
+  const content = visible.length
+    ? `Showing open roles ${offset + 1}–${offset + visible.length}${filterLabels.length > 0 ? ` matching **${filterLabels.join(" · ")}**` : ""}.`
+    : offset === 0
+      ? "No open roles matched those filters."
+      : "There are no more matching roles.";
+  const payload = {
+    content,
+    allowedMentions: { parse: [] },
+    embeds: visible.map(jobEmbed),
+    components: visible.length > 0 ? [searchNavigation(token, offset, results.length > 5)] : [],
+  };
+  if (interaction.isButton()) await interaction.update(payload);
+  else await interaction.reply({ ...payload, flags: ephemeral });
+}
+
+async function handleConfigure(interaction: ChatInputCommandInteraction, repository: Repository) {
+  requireManageGuild(interaction);
+  const guildId = requireGuild(interaction);
+  const channel = interaction.options.getChannel("channel", true);
+  const role = interaction.options.getRole("ping_role");
+  if (role?.id === guildId) throw new Error("Choose a role other than @everyone.");
+  const botMember = interaction.guild?.members.me;
+  const permissions =
+    botMember && "permissionsFor" in channel ? channel.permissionsFor(botMember) : null;
+  if (
+    permissions &&
+    (!permissions.has(PermissionFlagsBits.ViewChannel) ||
+      !permissions.has(PermissionFlagsBits.SendMessages) ||
+      !permissions.has(PermissionFlagsBits.EmbedLinks))
+  ) {
+    throw new Error("I need View Channel, Send Messages, and Embed Links in that channel.");
+  }
+  const selectedProgram = interaction.options.getString("program") ?? "all";
+  const settings = await repository.configureGuild({
+    guildId,
+    channelId: channel.id,
+    pingRoleId: role?.id ?? null,
+    programs: selectedProgram === "all" ? [] : [selectedProgram],
+    cycles: normalizeCsv(interaction.options.getString("cycles")),
+    keywords: normalizeCsv(interaction.options.getString("keywords")),
+    locations: normalizeCsv(interaction.options.getString("locations")),
+    sponsorship: interaction.options.getString("sponsorship") ?? "any",
+    requireLink: interaction.options.getBoolean("require_link") ?? false,
+    remoteOnly: interaction.options.getBoolean("remote_only") ?? false,
+    configuredBy: interaction.user.id,
+  });
+  await interaction.reply({
+    content:
+      "Configuration saved. The existing Keryx catalog is the baseline; only newly discovered roles will be announced.",
+    embeds: [configuredSummary(settings)],
+    flags: ephemeral,
+  });
+}
+
+async function handleStentor(
+  interaction: ChatInputCommandInteraction,
+  dependencies: HandlerDependencies,
+) {
+  const guildId = requireGuild(interaction);
+  requireManageGuild(interaction);
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === "configure") return handleConfigure(interaction, dependencies.repository);
+  if (subcommand === "status") {
+    const settings = await dependencies.repository.getGuildSettings(guildId);
+    const state = await dependencies.repository.getSyncState();
+    if (!settings) {
+      await interaction.reply({
+        content: "Stentor is not configured. Start with `/stentor configure`.",
+        flags: ephemeral,
+      });
+      return;
+    }
+    const health = state?.lastSuccessAt
+      ? `Last Keryx refresh: <t:${Math.floor(state.lastSuccessAt.getTime() / 1_000)}:R> · ${state.jobsSeen.toLocaleString()} indexed roles`
+      : "Keryx has not completed its first refresh yet.";
+    await interaction.reply({
+      content: health,
+      embeds: [configuredSummary(settings)],
+      flags: ephemeral,
+    });
+    return;
+  }
+  if (subcommand === "pause" || subcommand === "resume") {
+    const paused = subcommand === "pause";
+    const changed = await dependencies.repository.setGuildPaused(guildId, paused);
+    await interaction.reply({
+      content: changed
+        ? paused
+          ? "Announcements paused. Pending jobs will be retained."
+          : "Announcements resumed. Pending jobs will now be delivered."
+        : "Stentor is not configured. Start with `/stentor configure`.",
+      flags: ephemeral,
+    });
+    if (!paused) {
+      void dependencies
+        .announceNow()
+        .catch((error: unknown) =>
+          dependencies.logger.error({ error }, "Announcement wake-up failed"),
+        );
+    }
+    return;
+  }
+  if (subcommand === "sync") {
+    await interaction.deferReply({ flags: ephemeral });
+    const result = await dependencies.syncNow();
+    await interaction.editReply(
+      result.changed
+        ? `Keryx refresh complete. ${result.discovered.toLocaleString()} newly discovered role(s).${result.baseline ? " Initial catalog baseline created." : ""}`
+        : "Keryx is already current.",
+    );
+  }
+}
+
+async function handleJobAdmin(
+  interaction: ChatInputCommandInteraction,
+  dependencies: HandlerDependencies,
+) {
+  requireManageGuild(interaction);
+  const guildId = requireGuild(interaction);
+  const settings = await dependencies.repository.getGuildSettings(guildId);
+  if (!settings)
+    throw new Error("Configure Stentor with `/stentor configure` before publishing jobs.");
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === "post") {
+    const checked = validatePublicHttpsUrl(interaction.options.getString("url", true));
+    if (!checked.ok) throw new Error(checked.reason);
+    const expiresInDays = interaction.options.getInteger("expires_in_days");
+    const job = await dependencies.repository.createAdminJob({
+      guildId,
+      postedBy: interaction.user.id,
+      company: interaction.options.getString("company", true).trim(),
+      title: interaction.options.getString("title", true).trim(),
+      location: interaction.options.getString("location", true).trim(),
+      url: checked.url,
+      urlHost: checked.host,
+      program: interaction.options.getString("program", true) as
+        | "internship"
+        | "new-grad"
+        | "experienced",
+      description: interaction.options.getString("description")?.trim(),
+      cycle: interaction.options.getString("cycle")?.trim().toLocaleLowerCase("en-US"),
+      closesAt: expiresInDays ? new Date(Date.now() + expiresInDays * 86_400_000) : null,
+    });
+    await dependencies.repository.enqueueAnnouncement(guildId, settings.channelId, job.id);
+    await dependencies.enqueuePersonalMatches([job]);
+    await interaction.reply({
+      content: `Queued **${job.company} — ${job.title}** for <#${settings.channelId}>. Job ID: \`${job.id}\``,
+      flags: ephemeral,
+    });
+    void dependencies
+      .announceNow()
+      .catch((error: unknown) =>
+        dependencies.logger.error({ error }, "Announcement wake-up failed"),
+      );
+    return;
+  }
+
+  const jobId = interaction.options.getString("job_id", true);
+  const job = await dependencies.repository.closeAdminJob(guildId, jobId);
+  if (!job) throw new Error("That admin-authored job was not found in this server.");
+  const announcement = await dependencies.repository.getAnnouncement(guildId, jobId);
+  if (announcement?.messageId) {
+    try {
+      const channel = await dependencies.client.channels.fetch(announcement.channelId);
+      if (channel?.isTextBased() && "messages" in channel) {
+        const message = await channel.messages.fetch(announcement.messageId);
+        await message.edit({ embeds: [jobEmbed(job)], components: [] });
+      }
+    } catch (error) {
+      dependencies.logger.warn(
+        { error, guildId, jobId },
+        "Could not update the closed job message",
+      );
+    }
+  }
+  await interaction.reply({
+    content: `Closed **${job.company} — ${job.title}**.`,
+    flags: ephemeral,
+  });
+}
+
+async function handleAlerts(
+  interaction: ChatInputCommandInteraction,
+  dependencies: HandlerDependencies,
+): Promise<void> {
+  const guildId = requireGuild(interaction);
+  const userId = interaction.user.id;
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "create") {
+    const name = interaction.options.getString("name", true).trim();
+    if (!name) throw new Error("Alert name cannot be blank.");
+    const current = await dependencies.repository.listUserSubscriptions(guildId, userId);
+    const replacing = current.some(
+      (subscription) => subscription.nameKey === name.toLocaleLowerCase("en-US"),
+    );
+    if (!replacing && current.length >= 5) {
+      throw new Error(
+        "You can keep up to five alerts per server. Delete one before adding another.",
+      );
+    }
+    const selectedProgram = interaction.options.getString("program") ?? "all";
+    const timezone = (interaction.options.getString("timezone") ??
+      "America/New_York") as SupportedTimezone;
+    if (!supportedTimezones.includes(timezone)) throw new Error("Unsupported timezone.");
+    const digestHour = interaction.options.getInteger("digest_hour") ?? 9;
+    const deliveryMode = (interaction.options.getString("delivery") ?? "daily") as
+      | "daily"
+      | "immediate";
+    const subscription = await dependencies.repository.saveSubscription({
+      guildId,
+      userId,
+      name,
+      programs: selectedProgram === "all" ? [] : [selectedProgram],
+      cycles: normalizeCsv(interaction.options.getString("cycles")),
+      keywords: normalizeCsv(interaction.options.getString("keywords")),
+      locations: normalizeCsv(interaction.options.getString("locations")),
+      sponsorship: interaction.options.getString("sponsorship") ?? "any",
+      requireLink: interaction.options.getBoolean("require_link") ?? true,
+      remoteOnly: interaction.options.getBoolean("remote_only") ?? false,
+      deliveryMode,
+      timezone,
+      digestHour,
+      nextDigestAt: nextDigestAt(timezone, digestHour),
+    });
+    await dependencies.repository.discardPendingSubscriptionDeliveries(subscription.id);
+    await interaction.reply({
+      content: `${replacing ? "Updated" : "Created"} your private **${escapeMarkdown(name)}** alert. It starts with the next newly discovered job; use \`/alerts preview\` to inspect current matches.`,
+      embeds: [subscriptionEmbed(subscription)],
+      allowedMentions: { parse: [] },
+      flags: ephemeral,
+    });
+    return;
+  }
+
+  if (subcommand === "manage") {
+    const subscriptions = await dependencies.repository.listUserSubscriptions(guildId, userId);
+    await interaction.reply({
+      content:
+        subscriptions.length > 0
+          ? `You have ${subscriptions.length}/5 private alert${subscriptions.length === 1 ? "" : "s"}.`
+          : "You have no saved alerts. Create one with `/alerts create`.",
+      embeds: subscriptions.map(subscriptionEmbed),
+      flags: ephemeral,
+    });
+    return;
+  }
+
+  if (subcommand === "forget-me") {
+    if (!interaction.options.getBoolean("confirm", true)) {
+      throw new Error("Set confirm to True to permanently delete your personal data.");
+    }
+    const deleted = await dependencies.repository.deleteUserSubscriptions(userId);
+    await interaction.reply({
+      content: `Deleted ${deleted} personal alert${deleted === 1 ? "" : "s"} and all associated delivery history.`,
+      flags: ephemeral,
+    });
+    return;
+  }
+
+  const name = interaction.options.getString("name", true);
+  if (subcommand === "delete") {
+    const deleted = await dependencies.repository.deleteSubscription(guildId, userId, name);
+    if (!deleted) throw new Error("That alert was not found.");
+    await interaction.reply({ content: `Deleted **${escapeMarkdown(name)}**.`, flags: ephemeral });
+    return;
+  }
+  if (subcommand === "pause" || subcommand === "resume") {
+    const paused = subcommand === "pause";
+    const subscription = await dependencies.repository.setSubscriptionPaused(
+      guildId,
+      userId,
+      name,
+      paused,
+    );
+    if (!subscription) throw new Error("That alert was not found.");
+    await interaction.reply({
+      content: paused
+        ? `Paused **${escapeMarkdown(subscription.name)}**.`
+        : `Resumed **${escapeMarkdown(subscription.name)}**. Future matches will be delivered privately.`,
+      embeds: [subscriptionEmbed(subscription)],
+      flags: ephemeral,
+    });
+    if (!paused) {
+      void dependencies
+        .notifyNow()
+        .catch((error: unknown) => dependencies.logger.error({ error }, "Alert wake-up failed"));
+    }
+    return;
+  }
+  if (subcommand === "preview") {
+    const subscription = await dependencies.repository.getUserSubscription(guildId, userId, name);
+    if (!subscription) throw new Error("That alert was not found.");
+    const matches = await dependencies.repository.searchSubscriptionMatches(subscription, 5);
+    await interaction.reply({
+      content:
+        matches.length > 0
+          ? `Current preview for **${escapeMarkdown(subscription.name)}**. These are not added to your delivery queue.`
+          : `No currently open jobs match **${escapeMarkdown(subscription.name)}**.`,
+      embeds: matches.map(jobEmbed),
+      allowedMentions: { parse: [] },
+      flags: ephemeral,
+    });
+  }
+}
+
+async function handleAutocomplete(
+  interaction: AutocompleteInteraction,
+  repository: Repository,
+): Promise<void> {
+  if (interaction.commandName !== "alerts" || !interaction.guildId) return;
+  const focused = interaction.options.getFocused().toLocaleLowerCase("en-US");
+  const subscriptions = await repository.listUserSubscriptions(
+    interaction.guildId,
+    interaction.user.id,
+  );
+  await interaction.respond(
+    subscriptions
+      .filter((subscription) => subscription.nameKey.includes(focused))
+      .slice(0, 25)
+      .map((subscription) => ({ name: subscription.name, value: subscription.name })),
+  );
+}
+
+async function handleCommand(
+  interaction: ChatInputCommandInteraction,
+  dependencies: HandlerDependencies,
+  searchSessions: SearchSessions,
+) {
+  if (interaction.commandName === "stentor") return handleStentor(interaction, dependencies);
+  if (interaction.commandName === "job-admin") return handleJobAdmin(interaction, dependencies);
+  if (interaction.commandName === "alerts") return handleAlerts(interaction, dependencies);
+  if (interaction.commandName === "jobs") {
+    const guildId = requireGuild(interaction);
+    const subcommand = interaction.options.getSubcommand();
+    const filters: JobSearchFilters = {
+      query: subcommand === "search" ? (interaction.options.getString("query") ?? "") : "",
+      program: subcommand === "search" ? interaction.options.getString("program") : null,
+      cycle: subcommand === "search" ? interaction.options.getString("cycle") : null,
+      location: subcommand === "search" ? interaction.options.getString("location") : null,
+      sponsorship: subcommand === "search" ? interaction.options.getString("sponsorship") : null,
+      remoteOnly:
+        subcommand === "search" ? (interaction.options.getBoolean("remote_only") ?? false) : false,
+      requireLink:
+        subcommand === "search" ? (interaction.options.getBoolean("require_link") ?? false) : false,
+    };
+    const token = searchSessions.create(interaction.user.id, guildId, filters);
+    return renderSearch(interaction, dependencies.repository, guildId, filters, 0, token);
+  }
+}
+
+async function handleButton(
+  interaction: ButtonInteraction,
+  repository: Repository,
+  searchSessions: SearchSessions,
+) {
+  if (!interaction.customId.startsWith("jobs:p:")) return;
+  if (!interaction.guildId) throw new Error("This control can only be used in a server.");
+  const [, , token, rawOffset] = interaction.customId.split(":");
+  if (!token) throw new Error("Invalid search control.");
+  const offset = Number.parseInt(rawOffset ?? "0", 10);
+  const filters = searchSessions.get(token, interaction.user.id, interaction.guildId);
+  if (!filters) throw new Error("This search expired. Run `/jobs search` again.");
+  await renderSearch(
+    interaction,
+    repository,
+    interaction.guildId,
+    filters,
+    Number.isFinite(offset) ? offset : 0,
+    token,
+  );
+}
+
+export function createInteractionHandler(dependencies: HandlerDependencies) {
+  const searchSessions = new SearchSessions();
+  return async (interaction: Interaction): Promise<void> => {
+    try {
+      if (interaction.isAutocomplete())
+        await handleAutocomplete(interaction, dependencies.repository);
+      else if (interaction.isChatInputCommand()) {
+        await handleCommand(interaction, dependencies, searchSessions);
+      } else if (interaction.isButton()) {
+        await handleButton(interaction, dependencies.repository, searchSessions);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Something went wrong.";
+      dependencies.logger.error(
+        { error, interactionId: interaction.id, userId: interaction.user.id },
+        "Interaction failed",
+      );
+      if (!interaction.isRepliable()) return;
+      if (interaction.deferred || interaction.replied)
+        await interaction.editReply({ content: `⚠️ ${message}` });
+      else await interaction.reply({ content: `⚠️ ${message}`, flags: ephemeral });
+    }
+  };
+}

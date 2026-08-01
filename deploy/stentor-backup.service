@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up the Stentor PostgreSQL database
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/stentor-backup
