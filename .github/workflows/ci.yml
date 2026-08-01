@@ -19,6 +19,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: sh -n deploy/*.sh
       - run: npm run format:check
       - run: npm run check
       - run: npm test

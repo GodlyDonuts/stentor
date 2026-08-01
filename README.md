@@ -127,10 +127,13 @@ The compose file binds PostgreSQL and the health endpoint to loopback only. The 
 For updates:
 
 ```sh
-git pull --ff-only
-docker compose build
-docker compose up -d
+sudo ./deploy/deploy.sh
 ```
+
+The release script accepts only a clean production worktree, pulls `main` with
+fast-forward semantics, validates Compose, builds the image, registers commands,
+and requires readiness within 60 seconds. A failed rollout automatically restores
+the previous image. The two newest rollback images are retained.
 
 Back up the database regularly:
 
