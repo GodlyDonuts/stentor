@@ -2,7 +2,12 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
   EmbedBuilder,
+  SectionBuilder,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
+  TextDisplayBuilder,
   escapeMarkdown,
 } from "discord.js";
 import type { Job } from "../db/schema.js";
@@ -94,52 +99,141 @@ function boardProgramLabel(program: string | null): string {
   return "All roles";
 }
 
-export function jobBoardEmbed(settings: GuildSettings, boardJobs: Job[]): EmbedBuilder {
-  const scope = [
-    settings.programs.length > 0 ? settings.programs.map(formatProgram).join(" + ") : "All roles",
-    settings.cycles.length > 0 ? settings.cycles.join(", ") : "all recruiting cycles",
-  ].join(" · ");
-  const embed = new EmbedBuilder()
-    .setColor(0x6c63ff)
-    .setTitle("Stentor · Live Job Board")
-    .setDescription(
-      `The newest matching opportunities, refreshed automatically from Keryx.\n**${escapeMarkdown(scope)}**\n\nUse the buttons below for private, paginated browsing or run \`/jobs search\` for custom filters.`,
-    )
-    .setFooter({ text: "One live board · no announcement flood" })
-    .setTimestamp();
-  if (boardJobs.length === 0) {
-    embed.addFields({
-      name: "No open matches yet",
-      value: "Stentor will update this board automatically when a matching role appears.",
-    });
-    return embed;
-  }
-  for (const job of boardJobs) {
-    const title = trim(`${job.company} — ${job.title}`, 200);
-    const linkedTitle = job.url ? `[${escapeMarkdown(title)}](${job.url})` : escapeMarkdown(title);
-    embed.addFields({
-      name: linkedTitle,
-      value: trim(
-        `${escapeMarkdown(job.location)} · ${formatProgram(job.program)} · ${escapeMarkdown(job.cycle)} · <t:${Math.floor(job.firstSeen.getTime() / 1_000)}:R>`,
-        1_024,
+function titleCaseCycle(cycle: string): string {
+  return cycle
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function boardScope(settings: GuildSettings): string {
+  const programs =
+    settings.programs.length > 0 ? settings.programs.map(formatProgram).join(" + ") : "All roles";
+  const cycles =
+    settings.cycles.length === 0
+      ? "All cycles"
+      : settings.cycles.length === 1
+        ? titleCaseCycle(settings.cycles[0]!)
+        : `${titleCaseCycle(settings.cycles[0]!)} → ${titleCaseCycle(settings.cycles.at(-1)!)}`;
+  return `${programs} · ${cycles}${settings.requireLink ? " · Verified links" : ""}`;
+}
+
+function compactConfidence(job: Job): string {
+  if (job.linkStatus === "ats-verified") return "ATS verified";
+  if (job.linkStatus === "cross-source") return "Cross-checked";
+  if (job.linkStatus === "platform-structured") return "Recruiting platform";
+  if (job.linkStatus === "admin-submitted") return "Admin-posted";
+  return "Link pending verification";
+}
+
+function boardJobText(job: Job, rank?: number): string {
+  const company = escapeMarkdown(trim(job.company, 80));
+  const title = escapeMarkdown(trim(job.title, 120));
+  const location = escapeMarkdown(trim(job.location, 100));
+  const prefix = rank ? `${String(rank).padStart(2, "0")} · ` : "";
+  return `### ${prefix}${company}\n**${title}**\n📍 ${location}\n\`${titleCaseCycle(job.cycle).toUpperCase()}\`  \`${formatProgram(job.program).toUpperCase()}\`\n-# ${compactConfidence(job)} · Added <t:${Math.floor(job.firstSeen.getTime() / 1_000)}:R>`;
+}
+
+function addJobCard(container: ContainerBuilder, job: Job, rank?: number): void {
+  if (job.url) {
+    container.addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(boardJobText(job, rank)))
+        .setButtonAccessory(
+          new ButtonBuilder()
+            .setLabel("Apply")
+            .setEmoji("↗️")
+            .setStyle(ButtonStyle.Link)
+            .setURL(job.url),
+        ),
+    );
+  } else {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        `${boardJobText(job, rank)}\n-# Application link unavailable`,
       ),
-    });
+    );
   }
-  return embed;
+}
+
+function addJobCards(container: ContainerBuilder, jobs: Job[], ranked: boolean): void {
+  jobs.forEach((job, index) => {
+    addJobCard(container, job, ranked ? index + 1 : undefined);
+    if (index < jobs.length - 1) {
+      container.addSeparatorComponents(
+        new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small),
+      );
+    }
+  });
+}
+
+export function jobBoardContainer(
+  settings: GuildSettings,
+  boardJobs: Job[],
+  brandIconUrl?: string,
+): ContainerBuilder {
+  const updated = Math.floor(Date.now() / 1_000);
+  const header = `# STENTOR\n### Opportunity radar\n🟢 **LIVE** · **${escapeMarkdown(boardScope(settings))}**\n-# Curated from Keryx · Refreshed <t:${updated}:R>`;
+  const container = new ContainerBuilder().setAccentColor(0x7c5cff);
+  if (brandIconUrl) {
+    container.addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(header))
+        .setThumbnailAccessory((thumbnail) =>
+          thumbnail.setURL(brandIconUrl).setDescription("Stentor live job board"),
+        ),
+    );
+  } else {
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(header));
+  }
+  container.addSeparatorComponents(
+    new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Large),
+  );
+  if (boardJobs.length > 0) {
+    addJobCards(container, boardJobs, true);
+  } else {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        "## The radar is clear\nNo open roles match this board yet. Stentor will refresh automatically when one appears.",
+      ),
+    );
+  }
+  container.addSeparatorComponents(
+    new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Large),
+  );
+  const controls = jobBoardControls(settings);
+  if (controls) container.addActionRowComponents(controls);
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `-# Showing ${boardJobs.length} newest match${boardJobs.length === 1 ? "" : "es"} · Browsing opens privately · No channel spam`,
+    ),
+  );
+  return container;
 }
 
 export function jobBoardControls(settings: GuildSettings): ActionRowBuilder<ButtonBuilder> | null {
   const available =
     settings.programs.length > 0 ? settings.programs : ["internship", "new-grad", "all"];
-  const programs = [...new Set(available)].slice(0, 5);
+  const programs = [...new Set(available)].slice(0, 3);
   if (programs.length === 0) return null;
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    programs.map((program) =>
+    ...programs.map((program) =>
       new ButtonBuilder()
         .setCustomId(`board:start:${program}:0`)
-        .setLabel(program === "all" ? "Browse all" : `Browse ${boardProgramLabel(program)}`)
+        .setLabel(program === "all" ? "All roles" : boardProgramLabel(program))
+        .setEmoji(program === "internship" ? "🧭" : "🔎")
         .setStyle(program === "internship" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     ),
+    new ButtonBuilder()
+      .setCustomId("board:help:alerts:0")
+      .setLabel("Private alerts")
+      .setEmoji("🔔")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("board:help:search:0")
+      .setLabel("Advanced search")
+      .setEmoji("⚙️")
+      .setStyle(ButtonStyle.Secondary),
   );
 }
 
@@ -161,6 +255,59 @@ export function boardBrowseNavigation(
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!hasNext),
   );
+}
+
+export function jobBrowserContainer(
+  settings: GuildSettings,
+  browserJobs: Job[],
+  program: string | null,
+  offset: number,
+  hasNext: boolean,
+): ContainerBuilder {
+  const label = boardProgramLabel(program);
+  const container = new ContainerBuilder()
+    .setAccentColor(program === "new-grad" ? 0x16a085 : 0x7c5cff)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        `# ${label}\n**Private explorer** · ${escapeMarkdown(boardScope(settings))}\n-# Showing ${browserJobs.length > 0 ? `${offset + 1}–${offset + browserJobs.length}` : "no matches"}`,
+      ),
+    )
+    .addSeparatorComponents(
+      new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Large),
+    );
+  if (browserJobs.length > 0) addJobCards(container, browserJobs, false);
+  else {
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        "## No matching roles\nTry another board view or `/jobs search` with broader filters.",
+      ),
+    );
+  }
+  container.addSeparatorComponents(
+    new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Large),
+  );
+  if (browserJobs.length > 0) {
+    container.addActionRowComponents(boardBrowseNavigation(program, offset, hasNext));
+  }
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      "-# Only you can see this explorer · Results stay current across restarts",
+    ),
+  );
+  return container;
+}
+
+export function boardHelpContainer(kind: "alerts" | "search"): ContainerBuilder {
+  const isAlerts = kind === "alerts";
+  return new ContainerBuilder()
+    .setAccentColor(isAlerts ? 0xf0b232 : 0x7c5cff)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        isAlerts
+          ? "# 🔔 Private job alerts\nCreate up to five personal alerts with `/alerts create`. Choose immediate delivery or a daily digest, then manage them with `/alerts manage`.\n\n-# Alerts are private and never change the public board."
+          : "# ⚙️ Advanced search\nRun `/jobs search` to filter by company, title, cycle, location, remote work, sponsorship, or application-link availability.\n\n-# Search results are private and paginated.",
+      ),
+    );
 }
 
 export function digestEmbed(subscription: Subscription, digestJobs: Job[]): EmbedBuilder {

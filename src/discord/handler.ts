@@ -17,8 +17,9 @@ import type { JobSearchFilters } from "../domain/search.js";
 import { validatePublicHttpsUrl } from "../domain/url.js";
 import type { Logger } from "../logger.js";
 import {
-  boardBrowseNavigation,
+  boardHelpContainer,
   jobEmbed,
+  jobBrowserContainer,
   searchNavigation,
   subscriptionEmbed,
 } from "./presentation.js";
@@ -143,26 +144,16 @@ async function renderBoardBrowse(
   }
   const results = await repository.searchGuildBoardJobs(settings, program, offset, 6);
   const visible = results.slice(0, 5);
-  const label =
-    program === "internship"
-      ? "internships"
-      : program === "new-grad"
-        ? "new-graduate roles"
-        : "roles";
   const payload = {
-    content:
-      visible.length > 0
-        ? `Showing ${label} ${offset + 1}–${offset + visible.length} from this server's live-board filters.`
-        : offset === 0
-          ? `No open ${label} match this server's live-board filters.`
-          : `There are no more matching ${label}.`,
     allowedMentions: { parse: [] as never[] },
-    embeds: visible.map(jobEmbed),
-    components:
-      visible.length > 0 ? [boardBrowseNavigation(program, offset, results.length > 5)] : [],
+    components: [jobBrowserContainer(settings, visible, program, offset, results.length > 5)],
   };
-  if (initial) await interaction.reply({ ...payload, flags: ephemeral });
-  else await interaction.update(payload);
+  if (initial) {
+    await interaction.reply({
+      ...payload,
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+    });
+  } else await interaction.update(payload);
 }
 
 async function handleConfigure(
@@ -558,6 +549,17 @@ async function handleButton(
   if (interaction.customId.startsWith("board:")) {
     if (!interaction.guildId) throw new Error("This control can only be used in a server.");
     const [, action, rawProgram, rawOffset] = interaction.customId.split(":");
+    if (action === "help") {
+      if (rawProgram !== "alerts" && rawProgram !== "search") {
+        throw new Error("Invalid live-board help control.");
+      }
+      await interaction.reply({
+        allowedMentions: { parse: [] },
+        components: [boardHelpContainer(rawProgram)],
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      });
+      return;
+    }
     if (action !== "start" && action !== "page") throw new Error("Invalid live-board control.");
     if (!rawProgram || !["all", "internship", "new-grad", "experienced"].includes(rawProgram)) {
       throw new Error("Invalid live-board program.");

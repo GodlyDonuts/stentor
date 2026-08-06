@@ -1,11 +1,12 @@
-import { ChannelType } from "discord.js";
+import { ChannelType, ComponentType, MessageFlags } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 import type { Repository } from "../src/db/repository.js";
 import type { GuildSettings, Job } from "../src/db/schema.js";
 import {
   boardBrowseNavigation,
+  jobBoardContainer,
   jobBoardControls,
-  jobBoardEmbed,
+  jobBrowserContainer,
 } from "../src/discord/presentation.js";
 import { createLogger } from "../src/logger.js";
 import { createMetrics } from "../src/metrics.js";
@@ -58,18 +59,41 @@ const job = {
 } as Job;
 
 describe("live job board presentation", () => {
-  it("renders compact linked jobs and persistent browse controls", () => {
-    const embed = jobBoardEmbed(settings, [job]).toJSON();
+  it("renders a branded Components V2 dashboard within Discord's component limit", () => {
+    const container = jobBoardContainer(settings, Array<Job>(6).fill(job)).toJSON();
     const controls = jobBoardControls(settings)?.toJSON();
     const navigation = boardBrowseNavigation("internship", 5, true).toJSON();
+    const browser = jobBrowserContainer(settings, [job], "internship", 0, false).toJSON();
+    const countComponents = (component: unknown): number => {
+      if (!component || typeof component !== "object") return 0;
+      const children =
+        "components" in component && Array.isArray(component.components)
+          ? component.components
+          : [];
+      const accessory = "accessory" in component ? component.accessory : null;
+      return (
+        1 +
+        children.reduce<number>((total, child) => total + countComponents(child), 0) +
+        (accessory ? countComponents(accessory) : 0)
+      );
+    };
 
-    expect(embed.title).toBe("Stentor · Live Job Board");
-    expect(embed.fields?.[0]?.name).toContain("https://example.com/apply");
+    expect(container.type).toBe(ComponentType.Container);
+    expect(container.accent_color).toBe(0x7c5cff);
+    expect(JSON.stringify(container)).toContain("🟢 **LIVE**");
+    expect(JSON.stringify(container)).toContain("https://example.com/apply");
+    expect(countComponents(container)).toBeLessThanOrEqual(40);
+    expect(JSON.stringify(browser)).toContain("Private explorer");
     expect(
       controls?.components[0] && "custom_id" in controls.components[0]
         ? controls.components[0].custom_id
         : null,
     ).toBe("board:start:internship:0");
+    expect(
+      controls?.components.map((component) =>
+        "custom_id" in component ? component.custom_id : null,
+      ),
+    ).toEqual(["board:start:internship:0", "board:help:alerts:0", "board:help:search:0"]);
     expect(
       navigation.components.map((component) =>
         "custom_id" in component ? component.custom_id : null,
@@ -108,6 +132,11 @@ describe("JobBoardPublisher", () => {
       Promise.all([publisher.refresh(settings), publisher.refresh(settings)]),
     ).resolves.toEqual(["message-1", "message-1"]);
     expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications,
+      }),
+    );
     expect(pin).toHaveBeenCalledWith("Stentor live job board");
     expect(setGuildBoardMessage).toHaveBeenCalledWith("guild-1", "message-1");
   });

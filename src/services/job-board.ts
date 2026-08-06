@@ -1,7 +1,14 @@
-import { ChannelType, DiscordAPIError, RESTJSONErrorCodes, type Client } from "discord.js";
+import {
+  ChannelType,
+  DiscordAPIError,
+  EmbedBuilder,
+  MessageFlags,
+  RESTJSONErrorCodes,
+  type Client,
+} from "discord.js";
 import type { Repository } from "../db/repository.js";
 import type { GuildSettings } from "../db/schema.js";
-import { jobBoardControls, jobBoardEmbed } from "../discord/presentation.js";
+import { jobBoardContainer } from "../discord/presentation.js";
 import type { Logger } from "../logger.js";
 
 export class JobBoardPublisher {
@@ -37,14 +44,10 @@ export class JobBoardPublisher {
     ) {
       throw new Error("Configured live-board channel is unavailable or is not text-based");
     }
-    const jobs = await this.repository.searchGuildBoardJobs(settings, null, 0, 8);
-    const controls = jobBoardControls(settings);
-    const payload = {
-      content: "",
-      allowedMentions: { parse: [] as never[] },
-      embeds: [jobBoardEmbed(settings, jobs)],
-      components: controls ? [controls] : [],
-    };
+    const jobs = await this.repository.searchGuildBoardJobs(settings, null, 0, 6);
+    const components = [
+      jobBoardContainer(settings, jobs, this.client.user?.displayAvatarURL({ size: 256 })),
+    ];
     let message = null;
     if (settings.boardMessageId) {
       try {
@@ -59,9 +62,42 @@ export class JobBoardPublisher {
       }
     }
     if (message) {
-      await message.edit(payload);
+      const legacy = !message.flags.has(MessageFlags.IsComponentsV2);
+      try {
+        await message.edit({
+          ...(legacy ? { content: null, embeds: [] } : {}),
+          allowedMentions: { parse: [] },
+          components,
+          flags: MessageFlags.IsComponentsV2,
+        });
+      } catch (error) {
+        if (!legacy) throw error;
+        const previous = message;
+        message = await channel.send({
+          allowedMentions: { parse: [] },
+          components,
+          flags: MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications,
+        });
+        await previous
+          .edit({
+            content: null,
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0x7c5cff)
+                .setTitle("Stentor board upgraded")
+                .setDescription(`[Open the new live dashboard](${message.url})`),
+            ],
+            components: [],
+          })
+          .catch(() => undefined);
+        if (previous.pinned) await previous.unpin().catch(() => undefined);
+      }
     } else {
-      message = await channel.send(payload);
+      message = await channel.send({
+        allowedMentions: { parse: [] },
+        components,
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications,
+      });
     }
     if (!message.pinned) {
       if (message.pinnable) {

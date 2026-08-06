@@ -9,6 +9,7 @@ The name fits the job: Keryx is the herald that discovers opportunities; Stentor
 - Polls Keryx's canonical `data/jobs.json` with HTTP ETags every 15 minutes.
 - Creates a safe baseline on first boot instead of dumping the entire historical catalog into Discord.
 - Maintains one pinned live-board message that updates in place instead of flooding a channel.
+- Uses Discord Components V2 for a native dashboard with a branded container, compact job sections, inline Apply buttons, and private explorer pages.
 - Offers an optional classic announcement feed for servers that prefer one message per job.
 - Opens stateless, private pagination when a member uses the board's program buttons; one member never changes the public display for everyone else.
 - Applies per-server program, cycle, keyword, location, sponsorship, remote, and link-availability filters to the board and its browsing controls.

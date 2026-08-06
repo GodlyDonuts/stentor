@@ -18,7 +18,9 @@ Filter values are normalized at the command boundary. Values within one category
 
 ## Live-board interaction model
 
-The public channel contains one compact embed with the eight newest jobs matching the administrator's filters. New jobs and closures edit that message in place. Its buttons create ephemeral five-job pages scoped to the same server filters, so browsing is private and cannot mutate the shared display. Button state is encoded in the custom ID rather than process memory, allowing pagination to survive restarts. On startup Stentor verifies every active board and recreates a board whose message was deleted.
+The public channel contains one Components V2 dashboard with the six newest jobs matching the administrator's filters. The layout follows a 60–30–10 visual hierarchy: Discord's neutral surface carries the content, Stentor violet establishes brand and navigation, and restrained green/gold accents communicate live status and personal actions. Each job is a native section with an inline application button. New jobs and closures edit that message in place.
+
+Board controls create Components V2 ephemeral five-job pages scoped to the same server filters, so browsing is private and cannot mutate the shared display. Button state is encoded in the custom ID rather than process memory, allowing pagination to survive restarts. On startup Stentor verifies every active board and recreates a board whose message was deleted.
 
 ## Privacy
 
