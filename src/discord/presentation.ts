@@ -6,7 +6,7 @@ import {
   escapeMarkdown,
 } from "discord.js";
 import type { Job } from "../db/schema.js";
-import type { Subscription } from "../db/schema.js";
+import type { GuildSettings, Subscription } from "../db/schema.js";
 
 const COLORS = { internship: 0x6c63ff, "new-grad": 0x16a085, experienced: 0xd4a017 } as const;
 const LINK_LABELS: Record<string, string> = {
@@ -81,6 +81,82 @@ export function searchNavigation(
       .setDisabled(offset === 0),
     new ButtonBuilder()
       .setCustomId(`jobs:p:${token}:${offset + 5}`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!hasNext),
+  );
+}
+
+function boardProgramLabel(program: string | null): string {
+  if (program === "internship") return "Internships";
+  if (program === "new-grad") return "New graduate";
+  if (program === "experienced") return "Experienced";
+  return "All roles";
+}
+
+export function jobBoardEmbed(settings: GuildSettings, boardJobs: Job[]): EmbedBuilder {
+  const scope = [
+    settings.programs.length > 0 ? settings.programs.map(formatProgram).join(" + ") : "All roles",
+    settings.cycles.length > 0 ? settings.cycles.join(", ") : "all recruiting cycles",
+  ].join(" · ");
+  const embed = new EmbedBuilder()
+    .setColor(0x6c63ff)
+    .setTitle("Stentor · Live Job Board")
+    .setDescription(
+      `The newest matching opportunities, refreshed automatically from Keryx.\n**${escapeMarkdown(scope)}**\n\nUse the buttons below for private, paginated browsing or run \`/jobs search\` for custom filters.`,
+    )
+    .setFooter({ text: "One live board · no announcement flood" })
+    .setTimestamp();
+  if (boardJobs.length === 0) {
+    embed.addFields({
+      name: "No open matches yet",
+      value: "Stentor will update this board automatically when a matching role appears.",
+    });
+    return embed;
+  }
+  for (const job of boardJobs) {
+    const title = trim(`${job.company} — ${job.title}`, 200);
+    const linkedTitle = job.url ? `[${escapeMarkdown(title)}](${job.url})` : escapeMarkdown(title);
+    embed.addFields({
+      name: linkedTitle,
+      value: trim(
+        `${escapeMarkdown(job.location)} · ${formatProgram(job.program)} · ${escapeMarkdown(job.cycle)} · <t:${Math.floor(job.firstSeen.getTime() / 1_000)}:R>`,
+        1_024,
+      ),
+    });
+  }
+  return embed;
+}
+
+export function jobBoardControls(settings: GuildSettings): ActionRowBuilder<ButtonBuilder> | null {
+  const available =
+    settings.programs.length > 0 ? settings.programs : ["internship", "new-grad", "all"];
+  const programs = [...new Set(available)].slice(0, 5);
+  if (programs.length === 0) return null;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    programs.map((program) =>
+      new ButtonBuilder()
+        .setCustomId(`board:start:${program}:0`)
+        .setLabel(program === "all" ? "Browse all" : `Browse ${boardProgramLabel(program)}`)
+        .setStyle(program === "internship" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    ),
+  );
+}
+
+export function boardBrowseNavigation(
+  program: string | null,
+  offset: number,
+  hasNext: boolean,
+): ActionRowBuilder<ButtonBuilder> {
+  const key = program ?? "all";
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`board:page:${key}:${Math.max(0, offset - 5)}`)
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(offset === 0),
+    new ButtonBuilder()
+      .setCustomId(`board:page:${key}:${offset + 5}`)
       .setLabel("Next")
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!hasNext),

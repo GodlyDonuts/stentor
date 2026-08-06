@@ -39,6 +39,7 @@ export interface GuildConfiguration {
   guildId: string;
   channelId: string;
   pingRoleId?: string | null;
+  deliveryMode: "board" | "announcements";
   programs: string[];
   cycles: string[];
   keywords: string[];
@@ -105,15 +106,30 @@ export class Repository {
     return this.db.select().from(guildSettings).where(eq(guildSettings.paused, false));
   }
 
+  async listActiveBoardGuilds(): Promise<GuildSettings[]> {
+    return this.db
+      .select()
+      .from(guildSettings)
+      .where(and(eq(guildSettings.paused, false), eq(guildSettings.deliveryMode, "board")));
+  }
+
   async configureGuild(configuration: GuildConfiguration): Promise<GuildSettings> {
+    const current = await this.getGuildSettings(configuration.guildId);
+    const boardMessageId =
+      current?.channelId === configuration.channelId &&
+      current.deliveryMode === configuration.deliveryMode
+        ? current.boardMessageId
+        : null;
     const [result] = await this.db
       .insert(guildSettings)
-      .values(configuration)
+      .values({ ...configuration, boardMessageId })
       .onConflictDoUpdate({
         target: guildSettings.guildId,
         set: {
           channelId: configuration.channelId,
           pingRoleId: configuration.pingRoleId,
+          deliveryMode: configuration.deliveryMode,
+          boardMessageId,
           programs: configuration.programs,
           cycles: configuration.cycles,
           keywords: configuration.keywords,
@@ -128,6 +144,13 @@ export class Repository {
       .returning();
     if (!result) throw new Error("Guild configuration was not saved");
     return result;
+  }
+
+  async setGuildBoardMessage(guildId: string, messageId: string): Promise<void> {
+    await this.db
+      .update(guildSettings)
+      .set({ boardMessageId: messageId, boardUpdatedAt: new Date() })
+      .where(and(eq(guildSettings.guildId, guildId), eq(guildSettings.deliveryMode, "board")));
   }
 
   async setGuildPaused(guildId: string, paused: boolean): Promise<boolean> {
@@ -481,6 +504,60 @@ export class Repository {
       .orderBy(desc(jobs.firstSeen), desc(jobs.createdAt))
       .offset(Math.max(0, offset))
       .limit(Math.min(6, limit));
+  }
+
+  async searchGuildBoardJobs(
+    settings: GuildSettings,
+    program: string | null,
+    offset: number,
+    limit: number,
+  ): Promise<Job[]> {
+    if (program && settings.programs.length > 0 && !settings.programs.includes(program)) return [];
+    const conditions = [
+      eq(jobs.status, "open"),
+      or(eq(jobs.source, KERYX_SOURCE), eq(jobs.ownerGuildId, settings.guildId))!,
+    ];
+    if (program) conditions.push(eq(jobs.program, program));
+    else if (settings.programs.length > 0)
+      conditions.push(inArray(jobs.program, settings.programs));
+    if (settings.cycles.length > 0) conditions.push(inArray(jobs.cycle, settings.cycles));
+    if (settings.keywords.length > 0) {
+      conditions.push(
+        or(
+          ...settings.keywords.flatMap((keyword) => {
+            const pattern = `%${keyword.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+            return [ilike(jobs.company, pattern), ilike(jobs.title, pattern)];
+          }),
+        )!,
+      );
+    }
+    if (settings.locations.length > 0) {
+      conditions.push(
+        or(...settings.locations.map((location) => ilike(jobs.location, `%${location}%`)))!,
+      );
+    }
+    if (settings.remoteOnly) conditions.push(ilike(jobs.location, "%remote%"));
+    if (settings.requireLink) conditions.push(isNotNull(jobs.url));
+    if (settings.sponsorship === "offers") {
+      conditions.push(
+        and(
+          or(ilike(jobs.sponsorship, "%offer%"), ilike(jobs.sponsorship, "%sponsor%")),
+          sql`coalesce(${jobs.sponsorship}, '') !~* ${"no-sponsorship|does not offer|citizens-only|citizenship"}`,
+        )!,
+      );
+    }
+    if (settings.sponsorship === "no-sponsorship") {
+      conditions.push(
+        sql`coalesce(${jobs.sponsorship}, '') ~* ${"no-sponsorship|does not offer|citizens-only|citizenship"}`,
+      );
+    }
+    return this.db
+      .select()
+      .from(jobs)
+      .where(and(...conditions))
+      .orderBy(desc(jobs.firstSeen), desc(jobs.createdAt))
+      .offset(Math.max(0, offset))
+      .limit(Math.min(25, limit));
   }
 
   async getJob(id: string): Promise<Job | null> {

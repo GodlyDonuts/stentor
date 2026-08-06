@@ -15,13 +15,22 @@ export const commands = [
     .addSubcommand((subcommand) =>
       subcommand
         .setName("configure")
-        .setDescription("Choose the announcement channel and filters")
+        .setDescription("Choose the live-board channel and filters")
         .addChannelOption((option) =>
           option
             .setName("channel")
-            .setDescription("Channel where new jobs are announced")
+            .setDescription("Channel that will contain the Stentor job display")
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
             .setRequired(true),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("display")
+            .setDescription("How the official channel should present jobs")
+            .addChoices(
+              { name: "Live board — one interactive message (recommended)", value: "board" },
+              { name: "Announcement feed — one message per job", value: "announcements" },
+            ),
         )
         .addStringOption((option) =>
           option
@@ -75,6 +84,9 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand.setName("sync").setDescription("Request an immediate Keryx refresh"),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("board").setDescription("Create, repair, or refresh the live job board"),
     ),
   new SlashCommandBuilder()
     .setName("jobs")

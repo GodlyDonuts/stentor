@@ -3,6 +3,7 @@ import type { Repository } from "../db/repository.js";
 import type { Logger } from "../logger.js";
 import type { Metrics } from "../metrics.js";
 import { applicationButton, jobEmbed } from "../discord/presentation.js";
+import type { JobBoardPublisher } from "./job-board.js";
 
 export class Announcer {
   private running = false;
@@ -14,6 +15,7 @@ export class Announcer {
     private readonly logger: Logger,
     private readonly metrics: Metrics,
     private readonly intervalMs: number,
+    private readonly jobBoard: JobBoardPublisher,
   ) {}
 
   start(): void {
@@ -39,7 +41,49 @@ export class Announcer {
     this.running = true;
     try {
       const pending = await this.repository.listPendingAnnouncements();
+      const boardGroups = new Map<string, typeof pending>();
       for (const item of pending) {
+        if (item.settings.deliveryMode !== "board") continue;
+        const group = boardGroups.get(item.announcement.guildId) ?? [];
+        group.push(item);
+        boardGroups.set(item.announcement.guildId, group);
+      }
+      for (const items of boardGroups.values()) {
+        const first = items[0];
+        if (!first) continue;
+        try {
+          const messageId = await this.jobBoard.refresh(first.settings);
+          for (const item of items) {
+            await this.repository.markAnnouncementSent(
+              item.announcement.guildId,
+              item.announcement.jobId,
+              messageId,
+            );
+            this.metrics.announcements.inc({ result: "sent" });
+          }
+          this.logger.info(
+            { guildId: first.settings.guildId, jobs: items.length },
+            "Live job board refreshed",
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          for (const item of items) {
+            await this.repository.markAnnouncementFailed(
+              item.announcement.guildId,
+              item.announcement.jobId,
+              item.announcement.attempts,
+              message,
+            );
+            this.metrics.announcements.inc({ result: "failed" });
+          }
+          this.logger.warn(
+            { error, guildId: first.settings.guildId, jobs: items.length },
+            "Live job board refresh failed",
+          );
+        }
+      }
+      for (const item of pending) {
+        if (item.settings.deliveryMode === "board") continue;
         try {
           const channel = await this.client.channels.fetch(item.announcement.channelId);
           if (!channel?.isTextBased() || channel.type === ChannelType.DM || !("send" in channel)) {

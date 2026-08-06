@@ -9,12 +9,16 @@ Stentor is a job-discovery and delivery system. It does not accept applications,
 There are three durable delivery stages in PostgreSQL:
 
 1. Keryx inserts and filter-relevant updates create a transactional fan-out event. An event is acknowledged only after public and personal queue writes succeed, so a process crash cannot lose a newly eligible job.
-2. Public announcements are unique by `(guild, job)` and carry message IDs so closures can update the original Discord message.
+2. Public refreshes are unique by `(guild, job)`. Live-board mode collapses any number of queued jobs into one edit of a stored, pinned message; classic announcement mode retains one message per job. Closures refresh the board or update the original announcement.
 3. Personal deliveries are unique by `(subscription, job)`. A subscription can send immediate private batches or timezone-aware daily digests.
 
 The delivery queues use bounded retry schedules and terminal states. A first Keryx synchronization creates a baseline and never generates fan-out events. Existing jobs are reconsidered only when a field that can change filter eligibility changes—for example, when Keryx promotes a withheld URL to a corroborated application link. New subscription creation also starts from “now”; preview is a read-only catalog query.
 
 Filter values are normalized at the command boundary. Values within one category are alternatives; categories combine conjunctively. Community jobs only match subscriptions from their owning guild.
+
+## Live-board interaction model
+
+The public channel contains one compact embed with the eight newest jobs matching the administrator's filters. New jobs and closures edit that message in place. Its buttons create ephemeral five-job pages scoped to the same server filters, so browsing is private and cannot mutate the shared display. Button state is encoded in the custom ID rather than process memory, allowing pagination to survive restarts. On startup Stentor verifies every active board and recreates a board whose message was deleted.
 
 ## Privacy
 

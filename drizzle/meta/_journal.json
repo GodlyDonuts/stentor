@@ -43,6 +43,13 @@
       "when": 1786035140877,
       "tag": "0005_motionless_lyja",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786047259625,
+      "tag": "0006_easy_christian_walker",
+      "breakpoints": true
     }
   ]
 }

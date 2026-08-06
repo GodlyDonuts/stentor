@@ -8,6 +8,7 @@ import { createLogger } from "./logger.js";
 import { createMetrics } from "./metrics.js";
 import { Announcer } from "./services/announcer.js";
 import { KeryxClient } from "./services/keryx-client.js";
+import { JobBoardPublisher } from "./services/job-board.js";
 import { Synchronizer } from "./services/synchronizer.js";
 import { SubscriptionMatcher, SubscriptionNotifier } from "./services/subscriptions.js";
 
@@ -18,6 +19,7 @@ const metrics = createMetrics();
 const { db, pool } = createDatabase(config.DATABASE_URL, logger, config.DB_POOL_MAX);
 const repository = new Repository(db);
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const jobBoard = new JobBoardPublisher(client, repository, logger);
 const subscriptionMatcher = new SubscriptionMatcher(repository);
 const synchronizer = new Synchronizer(
   new KeryxClient(config.KERYX_URL),
@@ -34,6 +36,7 @@ const announcer = new Announcer(
   logger,
   metrics,
   config.ANNOUNCEMENT_POLL_SECONDS * 1_000,
+  jobBoard,
 );
 const subscriptionNotifier = new SubscriptionNotifier(
   client,
@@ -54,6 +57,7 @@ client.on(
     announceNow: () => announcer.run(),
     notifyNow: () => subscriptionNotifier.run(),
     enqueuePersonalMatches: (jobs) => subscriptionMatcher.enqueue(jobs),
+    refreshBoard: (settings) => jobBoard.refresh(settings),
   }),
 );
 client.on(Events.Error, (error) => logger.error({ error }, "Discord client error"));
@@ -66,6 +70,7 @@ client.once(Events.ClientReady, (readyClient) => {
   synchronizer.start();
   announcer.start();
   subscriptionNotifier.start();
+  void jobBoard.refreshAll();
 });
 
 let shuttingDown = false;

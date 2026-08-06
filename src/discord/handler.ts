@@ -10,13 +10,18 @@ import {
   type Interaction,
 } from "discord.js";
 import type { Repository } from "../db/repository.js";
-import type { Job } from "../db/schema.js";
+import type { GuildSettings, Job } from "../db/schema.js";
 import { normalizeCsv } from "../domain/filter.js";
 import { nextDigestAt, supportedTimezones, type SupportedTimezone } from "../domain/schedule.js";
 import type { JobSearchFilters } from "../domain/search.js";
 import { validatePublicHttpsUrl } from "../domain/url.js";
 import type { Logger } from "../logger.js";
-import { jobEmbed, searchNavigation, subscriptionEmbed } from "./presentation.js";
+import {
+  boardBrowseNavigation,
+  jobEmbed,
+  searchNavigation,
+  subscriptionEmbed,
+} from "./presentation.js";
 import { SearchSessions } from "./search-sessions.js";
 
 interface HandlerDependencies {
@@ -27,6 +32,7 @@ interface HandlerDependencies {
   announceNow: () => Promise<void>;
   notifyNow: () => Promise<void>;
   enqueuePersonalMatches: (jobs: Job[]) => Promise<number>;
+  refreshBoard: (settings: GuildSettings) => Promise<string>;
 }
 
 const ephemeral = MessageFlags.Ephemeral;
@@ -45,8 +51,18 @@ function configuredSummary(
     .addFields(
       { name: "Channel", value: `<#${settings.channelId}>`, inline: true },
       {
+        name: "Display",
+        value: settings.deliveryMode === "board" ? "Live interactive board" : "Announcement feed",
+        inline: true,
+      },
+      {
         name: "Ping role",
-        value: settings.pingRoleId ? `<@&${settings.pingRoleId}>` : "None",
+        value:
+          settings.deliveryMode === "board"
+            ? "Disabled in live-board mode"
+            : settings.pingRoleId
+              ? `<@&${settings.pingRoleId}>`
+              : "None",
         inline: true,
       },
       { name: "Programs", value: list(settings.programs, "All"), inline: true },
@@ -113,9 +129,49 @@ async function renderSearch(
   else await interaction.reply({ ...payload, flags: ephemeral });
 }
 
-async function handleConfigure(interaction: ChatInputCommandInteraction, repository: Repository) {
+async function renderBoardBrowse(
+  interaction: ButtonInteraction,
+  repository: Repository,
+  guildId: string,
+  program: string | null,
+  offset: number,
+  initial: boolean,
+): Promise<void> {
+  const settings = await repository.getGuildSettings(guildId);
+  if (!settings || settings.deliveryMode !== "board") {
+    throw new Error("This live board is no longer configured.");
+  }
+  const results = await repository.searchGuildBoardJobs(settings, program, offset, 6);
+  const visible = results.slice(0, 5);
+  const label =
+    program === "internship"
+      ? "internships"
+      : program === "new-grad"
+        ? "new-graduate roles"
+        : "roles";
+  const payload = {
+    content:
+      visible.length > 0
+        ? `Showing ${label} ${offset + 1}–${offset + visible.length} from this server's live-board filters.`
+        : offset === 0
+          ? `No open ${label} match this server's live-board filters.`
+          : `There are no more matching ${label}.`,
+    allowedMentions: { parse: [] as never[] },
+    embeds: visible.map(jobEmbed),
+    components:
+      visible.length > 0 ? [boardBrowseNavigation(program, offset, results.length > 5)] : [],
+  };
+  if (initial) await interaction.reply({ ...payload, flags: ephemeral });
+  else await interaction.update(payload);
+}
+
+async function handleConfigure(
+  interaction: ChatInputCommandInteraction,
+  dependencies: HandlerDependencies,
+) {
   requireManageGuild(interaction);
   const guildId = requireGuild(interaction);
+  await interaction.deferReply({ flags: ephemeral });
   const channel = interaction.options.getChannel("channel", true);
   const role = interaction.options.getRole("ping_role");
   if (role?.id === guildId) throw new Error("Choose a role other than @everyone.");
@@ -131,10 +187,13 @@ async function handleConfigure(interaction: ChatInputCommandInteraction, reposit
     throw new Error("I need View Channel, Send Messages, and Embed Links in that channel.");
   }
   const selectedProgram = interaction.options.getString("program") ?? "all";
-  const settings = await repository.configureGuild({
+  const settings = await dependencies.repository.configureGuild({
     guildId,
     channelId: channel.id,
     pingRoleId: role?.id ?? null,
+    deliveryMode: (interaction.options.getString("display") ?? "board") as
+      | "board"
+      | "announcements",
     programs: selectedProgram === "all" ? [] : [selectedProgram],
     cycles: normalizeCsv(interaction.options.getString("cycles")),
     keywords: normalizeCsv(interaction.options.getString("keywords")),
@@ -144,11 +203,14 @@ async function handleConfigure(interaction: ChatInputCommandInteraction, reposit
     remoteOnly: interaction.options.getBoolean("remote_only") ?? false,
     configuredBy: interaction.user.id,
   });
-  await interaction.reply({
+  const boardMessageId =
+    settings.deliveryMode === "board" ? await dependencies.refreshBoard(settings) : null;
+  await interaction.editReply({
     content:
-      "Configuration saved. The existing Keryx catalog is the baseline; only newly discovered roles will be announced.",
+      settings.deliveryMode === "board"
+        ? `Configuration saved. The live board is ready${boardMessageId ? `: https://discord.com/channels/${guildId}/${settings.channelId}/${boardMessageId}` : "."}`
+        : "Configuration saved. Only newly eligible roles will be announced; the existing Keryx catalog remains the baseline.",
     embeds: [configuredSummary(settings)],
-    flags: ephemeral,
   });
 }
 
@@ -159,7 +221,7 @@ async function handleStentor(
   const guildId = requireGuild(interaction);
   requireManageGuild(interaction);
   const subcommand = interaction.options.getSubcommand();
-  if (subcommand === "configure") return handleConfigure(interaction, dependencies.repository);
+  if (subcommand === "configure") return handleConfigure(interaction, dependencies);
   if (subcommand === "status") {
     const settings = await dependencies.repository.getGuildSettings(guildId);
     const state = await dependencies.repository.getSyncState();
@@ -192,12 +254,29 @@ async function handleStentor(
       flags: ephemeral,
     });
     if (!paused) {
+      const settings = await dependencies.repository.getGuildSettings(guildId);
+      if (settings?.deliveryMode === "board") await dependencies.refreshBoard(settings);
       void dependencies
         .announceNow()
         .catch((error: unknown) =>
           dependencies.logger.error({ error }, "Announcement wake-up failed"),
         );
     }
+    return;
+  }
+  if (subcommand === "board") {
+    const settings = await dependencies.repository.getGuildSettings(guildId);
+    if (!settings) throw new Error("Stentor is not configured. Start with `/stentor configure`.");
+    if (settings.deliveryMode !== "board") {
+      throw new Error(
+        "This server uses announcement mode. Reconfigure it with display: Live board.",
+      );
+    }
+    await interaction.deferReply({ flags: ephemeral });
+    const messageId = await dependencies.refreshBoard(settings);
+    await interaction.editReply(
+      `Live board refreshed: https://discord.com/channels/${guildId}/${settings.channelId}/${messageId}`,
+    );
     return;
   }
   if (subcommand === "sync") {
@@ -244,7 +323,10 @@ async function handleJobAdmin(
     await dependencies.repository.enqueueAnnouncement(guildId, settings.channelId, job.id);
     await dependencies.enqueuePersonalMatches([job]);
     await interaction.reply({
-      content: `Queued **${job.company} — ${job.title}** for <#${settings.channelId}>. Job ID: \`${job.id}\``,
+      content:
+        settings.deliveryMode === "board"
+          ? `Added **${job.company} — ${job.title}** to the live-board refresh queue. Job ID: \`${job.id}\``
+          : `Queued **${job.company} — ${job.title}** for <#${settings.channelId}>. Job ID: \`${job.id}\``,
       flags: ephemeral,
     });
     void dependencies
@@ -259,7 +341,9 @@ async function handleJobAdmin(
   const job = await dependencies.repository.closeAdminJob(guildId, jobId);
   if (!job) throw new Error("That admin-authored job was not found in this server.");
   const announcement = await dependencies.repository.getAnnouncement(guildId, jobId);
-  if (announcement?.messageId) {
+  if (settings.deliveryMode === "board") {
+    await dependencies.refreshBoard(settings);
+  } else if (announcement?.messageId) {
     try {
       const channel = await dependencies.client.channels.fetch(announcement.channelId);
       if (channel?.isTextBased() && "messages" in channel) {
@@ -454,21 +538,41 @@ async function handleButton(
   repository: Repository,
   searchSessions: SearchSessions,
 ) {
-  if (!interaction.customId.startsWith("jobs:p:")) return;
-  if (!interaction.guildId) throw new Error("This control can only be used in a server.");
-  const [, , token, rawOffset] = interaction.customId.split(":");
-  if (!token) throw new Error("Invalid search control.");
-  const offset = Number.parseInt(rawOffset ?? "0", 10);
-  const filters = searchSessions.get(token, interaction.user.id, interaction.guildId);
-  if (!filters) throw new Error("This search expired. Run `/jobs search` again.");
-  await renderSearch(
-    interaction,
-    repository,
-    interaction.guildId,
-    filters,
-    Number.isFinite(offset) ? offset : 0,
-    token,
-  );
+  if (interaction.customId.startsWith("jobs:p:")) {
+    if (!interaction.guildId) throw new Error("This control can only be used in a server.");
+    const [, , token, rawOffset] = interaction.customId.split(":");
+    if (!token) throw new Error("Invalid search control.");
+    const offset = Number.parseInt(rawOffset ?? "0", 10);
+    const filters = searchSessions.get(token, interaction.user.id, interaction.guildId);
+    if (!filters) throw new Error("This search expired. Run `/jobs search` again.");
+    await renderSearch(
+      interaction,
+      repository,
+      interaction.guildId,
+      filters,
+      Number.isFinite(offset) ? offset : 0,
+      token,
+    );
+    return;
+  }
+  if (interaction.customId.startsWith("board:")) {
+    if (!interaction.guildId) throw new Error("This control can only be used in a server.");
+    const [, action, rawProgram, rawOffset] = interaction.customId.split(":");
+    if (action !== "start" && action !== "page") throw new Error("Invalid live-board control.");
+    if (!rawProgram || !["all", "internship", "new-grad", "experienced"].includes(rawProgram)) {
+      throw new Error("Invalid live-board program.");
+    }
+    const parsedOffset = Number.parseInt(rawOffset ?? "0", 10);
+    const offset = Number.isFinite(parsedOffset) ? Math.max(0, parsedOffset) : 0;
+    await renderBoardBrowse(
+      interaction,
+      repository,
+      interaction.guildId,
+      rawProgram === "all" ? null : rawProgram,
+      offset,
+      action === "start",
+    );
+  }
 }
 
 export function createInteractionHandler(dependencies: HandlerDependencies) {

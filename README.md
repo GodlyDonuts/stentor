@@ -1,6 +1,6 @@
 # Stentor
 
-Stentor is a Discord-native job board powered by [Keryx](https://github.com/GodlyDonuts/keryx). It announces newly discovered US internships and new-graduate roles, gives members an interactive search experience, and lets trusted server administrators publish and close community listings.
+Stentor is a Discord-native job board powered by [Keryx](https://github.com/GodlyDonuts/keryx). It maintains a live, interactive display of US internships and new-graduate roles, gives members a private search experience, and lets trusted server administrators publish and close community listings.
 
 The name fits the job: Keryx is the herald that discovers opportunities; Stentor is the voice that carries them into a community.
 
@@ -8,7 +8,11 @@ The name fits the job: Keryx is the herald that discovers opportunities; Stentor
 
 - Polls Keryx's canonical `data/jobs.json` with HTTP ETags every 15 minutes.
 - Creates a safe baseline on first boot instead of dumping the entire historical catalog into Discord.
-- Announces only new matching roles, with per-server program, cycle, keyword, location, and link-availability filters.
+- Maintains one pinned live-board message that updates in place instead of flooding a channel.
+- Offers an optional classic announcement feed for servers that prefer one message per job.
+- Opens stateless, private pagination when a member uses the board's program buttons; one member never changes the public display for everyone else.
+- Applies per-server program, cycle, keyword, location, sponsorship, remote, and link-availability filters to the board and its browsing controls.
+- Recreates a deleted board automatically on the next refresh or restart.
 - Persists every delivery and retries transient Discord failures with bounded exponential backoff.
 - Provides `/jobs search` and `/jobs latest` as private, paginated results.
 - Lets each member keep up to five private alerts with program, cycle, keyword, location, remote, sponsorship, and link filters.
@@ -23,7 +27,8 @@ Stentor requests only the Discord `Guilds` gateway intent. It does not read mess
 
 | Command                     | Who can use it | Purpose                                                                     |
 | --------------------------- | -------------- | --------------------------------------------------------------------------- |
-| `/stentor configure`        | Manage Server  | Select the output channel, optional ping role, and feed filters             |
+| `/stentor configure`        | Manage Server  | Select live-board or announcement mode, its channel, and filters            |
+| `/stentor board`            | Manage Server  | Create, repair, or immediately refresh the persistent board                 |
 | `/stentor status`           | Manage Server  | Show configuration and Keryx freshness                                      |
 | `/stentor pause` / `resume` | Manage Server  | Stop delivery without losing pending jobs                                   |
 | `/stentor sync`             | Manage Server  | Request an immediate conditional refresh                                    |
@@ -53,8 +58,9 @@ flowchart LR
     K["Keryx jobs.json"] -->|"ETag poll"| S["Synchronizer"]
     A["Discord admin"] -->|"/job-admin post"| S
     S --> P[("PostgreSQL")]
-    P --> Q["Durable delivery queue"]
-    Q --> D["Discord channels"]
+    P --> Q["Durable refresh queue"]
+    Q --> D["Pinned live board"]
+    Q --> F["Optional announcement feed"]
     P --> N["Personal alert worker"]
     N --> M["Private member DMs"]
     U["Discord member"] -->|"/jobs search"| P
@@ -69,7 +75,7 @@ PostgreSQL is the source of truth for jobs, guild settings, sync state, and idem
 1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications).
 2. On **Bot**, create a bot and reset/copy its token. Keep the token secret.
 3. On **OAuth2 → URL Generator**, select the `bot` and `applications.commands` scopes.
-4. Grant **View Channels**, **Send Messages**, **Embed Links**, and **Read Message History**. Add **Mention Everyone** only if Stentor should ping roles that are not mentionable.
+4. Grant **View Channels**, **Send Messages**, **Embed Links**, and **Read Message History**. Grant **Manage Messages** if Stentor should pin its live board. Add **Mention Everyone** only for classic announcement feeds that ping non-mentionable roles.
 5. Invite the bot, copy `.env.example` to `.env`, and set `DISCORD_TOKEN` and `DISCORD_APPLICATION_ID`.
 6. For instant command registration while developing, also set `DISCORD_DEV_GUILD_ID`.
 
@@ -150,7 +156,7 @@ Keep `.env` outside backups you share, enable Vultr's firewall, use SSH keys, di
 - `GET /metrics` exports Prometheus metrics.
 - JSON logs go to stdout and redact authorization/token fields.
 - Keryx failures never erase previously indexed jobs. A failed fetch increments health state and is retried at the next interval.
-- Announcement failures retry up to ten times. A `(guild, job)` primary key prevents duplicate delivery across restarts.
+- Board and announcement failures retry up to ten times. A `(guild, job)` primary key prevents duplicate delivery across restarts, while one stored board message ID prevents duplicate public displays.
 - The optional files under `deploy/` provide a one-minute host watchdog and daily seven-day local database backups for VPS deployments.
 
 ## Security model
