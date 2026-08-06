@@ -7,10 +7,17 @@ import {
   SectionBuilder,
   SeparatorBuilder,
   SeparatorSpacingSize,
+  StringSelectMenuBuilder,
   TextDisplayBuilder,
   escapeMarkdown,
 } from "discord.js";
 import { academicEligibilitySchema, type AcademicEligibility } from "../domain/keryx.js";
+import {
+  NOTIFICATION_ROLE_NONE,
+  notificationCategoryKey,
+  notificationCategoryLabel,
+  type NotificationCategory,
+} from "../domain/notification-role.js";
 import type { Job } from "../db/schema.js";
 import type { GuildSettings, Subscription } from "../db/schema.js";
 
@@ -123,6 +130,33 @@ export function searchNavigation(
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!hasNext),
   );
+}
+
+export function notificationRolePicker(
+  categories: NotificationCategory[],
+  selected: NotificationCategory[],
+): ActionRowBuilder<StringSelectMenuBuilder> {
+  const selectedKeys = new Set(selected.map(notificationCategoryKey));
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("alerts:roles")
+    .setPlaceholder("Choose the job pings you want")
+    .setMinValues(1)
+    .setMaxValues(Math.max(1, categories.length))
+    .addOptions({
+      label: "No channel pings",
+      description: "Remove all Stentor notification roles",
+      value: NOTIFICATION_ROLE_NONE,
+      default: selectedKeys.size === 0,
+    });
+  menu.addOptions(
+    categories.map((category) => ({
+      label: notificationCategoryLabel(category),
+      description: `Ping me for new ${category.program} roles in ${category.cycle}`.slice(0, 100),
+      value: notificationCategoryKey(category),
+      default: selectedKeys.has(notificationCategoryKey(category)),
+    })),
+  );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
 }
 
 function boardProgramLabel(program: string | null): string {
@@ -243,7 +277,7 @@ export function jobBoardContainer(
   if (controls) container.addActionRowComponents(controls);
   container.addTextDisplayComponents(
     new TextDisplayBuilder().setContent(
-      `-# Showing ${boardJobs.length} newest match${boardJobs.length === 1 ? "" : "es"} · Browsing opens privately · No channel spam`,
+      `-# Showing ${boardJobs.length} newest match${boardJobs.length === 1 ? "" : "es"} · Browsing opens privately · Role pings are opt-in`,
     ),
   );
   return container;
@@ -264,7 +298,7 @@ export function jobBoardControls(settings: GuildSettings): ActionRowBuilder<Butt
     ),
     new ButtonBuilder()
       .setCustomId("board:help:alerts:0")
-      .setLabel("Private alerts")
+      .setLabel("Notifications")
       .setEmoji("🔔")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
@@ -342,7 +376,7 @@ export function boardHelpContainer(kind: "alerts" | "search"): ContainerBuilder 
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(
         isAlerts
-          ? "# 🔔 Private job alerts\nCreate up to five personal alerts with `/alerts create`. Choose immediate delivery or a daily digest, then manage them with `/alerts manage`.\n\n-# Alerts are private and never change the public board."
+          ? "# 🔔 Your notifications\nUse `/alerts roles` for opt-in channel pings by program and recruiting cycle. For precise private filters, create up to five immediate DM alerts or daily digests with `/alerts create`, then manage them with `/alerts manage`.\n\n-# Your choices are private; only the resulting Discord roles are visible."
           : "# ⚙️ Advanced search\nRun `/jobs search` to filter by company, title, cycle, location, remote work, sponsorship, or application-link availability.\n\n-# Search results are private and paginated.",
       ),
     );

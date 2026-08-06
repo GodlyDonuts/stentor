@@ -36,6 +36,27 @@ export class Announcer {
     if (this.timer) clearInterval(this.timer);
   }
 
+  private async sendJobNotification(
+    channelId: string,
+    job: Parameters<typeof jobEmbed>[0],
+    roleIds: string[],
+  ): Promise<string> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased() || channel.type === ChannelType.DM || !("send" in channel)) {
+      throw new Error("Configured announcement channel is unavailable or is not text-based");
+    }
+    const row = applicationButton(job);
+    const message = await channel.send({
+      ...(roleIds.length > 0
+        ? { content: [...new Set(roleIds)].map((roleId) => `<@&${roleId}>`).join(" ") }
+        : {}),
+      allowedMentions: roleIds.length > 0 ? { roles: [...new Set(roleIds)] } : { parse: [] },
+      embeds: [jobEmbed(job)],
+      components: row ? [row] : [],
+    });
+    return message.id;
+  }
+
   async run(): Promise<void> {
     if (this.running || !this.client.isReady()) return;
     this.running = true;
@@ -52,14 +73,39 @@ export class Announcer {
         const first = items[0];
         if (!first) continue;
         try {
-          const messageId = await this.jobBoard.refresh(first.settings);
+          const boardMessageId = await this.jobBoard.refresh(first.settings);
           for (const item of items) {
-            await this.repository.markAnnouncementSent(
-              item.announcement.guildId,
-              item.announcement.jobId,
-              messageId,
-            );
-            this.metrics.announcements.inc({ result: "sent" });
+            try {
+              const roleIds =
+                item.announcement.action === "post"
+                  ? await this.repository.listMatchingNotificationRoles(
+                      item.announcement.guildId,
+                      item.job,
+                    )
+                  : [];
+              if (roleIds.length > 0) {
+                await this.sendJobNotification(item.announcement.channelId, item.job, roleIds);
+              }
+              await this.repository.markAnnouncementSent(
+                item.announcement.guildId,
+                item.announcement.jobId,
+                boardMessageId,
+              );
+              this.metrics.announcements.inc({ result: "sent" });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              await this.repository.markAnnouncementFailed(
+                item.announcement.guildId,
+                item.announcement.jobId,
+                item.announcement.attempts,
+                message,
+              );
+              this.metrics.announcements.inc({ result: "failed" });
+              this.logger.warn(
+                { error, guildId: item.settings.guildId, jobId: item.job.id },
+                "Role notification delivery failed",
+              );
+            }
           }
           this.logger.info(
             { guildId: first.settings.guildId, jobs: items.length },
@@ -89,8 +135,6 @@ export class Announcer {
           if (!channel?.isTextBased() || channel.type === ChannelType.DM || !("send" in channel)) {
             throw new Error("Configured announcement channel is unavailable or is not text-based");
           }
-          const row = applicationButton(item.job);
-          const ping = item.settings.pingRoleId ? `<@&${item.settings.pingRoleId}>` : undefined;
           let messageId: string;
           if (item.announcement.action === "close" && item.announcement.messageId) {
             if (!("messages" in channel)) {
@@ -100,15 +144,19 @@ export class Announcer {
             await message.edit({ embeds: [jobEmbed(item.job)], components: [] });
             messageId = message.id;
           } else {
-            const message = await channel.send({
-              ...(ping ? { content: ping } : {}),
-              allowedMentions: item.settings.pingRoleId
-                ? { roles: [item.settings.pingRoleId] }
-                : { parse: [] },
-              embeds: [jobEmbed(item.job)],
-              components: row ? [row] : [],
-            });
-            messageId = message.id;
+            const managedRoleIds = await this.repository.listMatchingNotificationRoles(
+              item.announcement.guildId,
+              item.job,
+            );
+            const roleIds = [
+              ...(item.settings.pingRoleId ? [item.settings.pingRoleId] : []),
+              ...managedRoleIds,
+            ];
+            messageId = await this.sendJobNotification(
+              item.announcement.channelId,
+              item.job,
+              roleIds,
+            );
           }
           await this.repository.markAnnouncementSent(
             item.announcement.guildId,

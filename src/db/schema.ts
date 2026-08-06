@@ -152,6 +152,41 @@ export const subscriptions = pgTable(
   ],
 );
 
+export const notificationRoles = pgTable(
+  "notification_roles",
+  {
+    guildId: text("guild_id").notNull(),
+    program: text("program").notNull(),
+    cycle: text("cycle").notNull(),
+    roleId: text("role_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.guildId, table.program, table.cycle] }),
+    uniqueIndex("notification_roles_guild_role_uidx").on(table.guildId, table.roleId),
+  ],
+);
+
+export const notificationRoleMemberships = pgTable(
+  "notification_role_memberships",
+  {
+    guildId: text("guild_id").notNull(),
+    userId: text("user_id").notNull(),
+    program: text("program").notNull(),
+    cycle: text("cycle").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.guildId, table.userId, table.program, table.cycle] }),
+    index("notification_role_memberships_category_idx").on(
+      table.guildId,
+      table.program,
+      table.cycle,
+    ),
+    index("notification_role_memberships_user_idx").on(table.userId),
+  ],
+);
+
 export const subscriptionDeliveries = pgTable(
   "subscription_deliveries",
   {
@@ -184,3 +219,5 @@ export type SyncState = typeof syncState.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type NewSubscription = typeof subscriptions.$inferInsert;
 export type SubscriptionDelivery = typeof subscriptionDeliveries.$inferSelect;
+export type NotificationRole = typeof notificationRoles.$inferSelect;
+export type NotificationRoleMembership = typeof notificationRoleMemberships.$inferSelect;

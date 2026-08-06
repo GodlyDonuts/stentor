@@ -41,6 +41,7 @@ Stentor requests only the Discord `Guilds` gateway intent. It does not read mess
 | `/jobs latest`              | Everyone       | Browse the newest open roles                                                |
 | `/jobs search`              | Everyone       | Search with program, cycle, location, remote, sponsorship, and link filters |
 | `/alerts create`            | Everyone       | Create or replace a private immediate alert or daily digest                 |
+| `/alerts roles`             | Everyone       | Choose bot-managed program + cycle roles for opt-in channel pings           |
 | `/alerts manage`            | Everyone       | Inspect private alerts and delivery problems                                |
 | `/alerts preview`           | Everyone       | Preview matches without backfilling the delivery queue                      |
 | `/alerts pause` / `resume`  | Everyone       | Control a personal alert                                                    |
@@ -57,6 +58,8 @@ Filters are **OR within a category** and **AND across categories**. An alert wit
 
 New alerts start at creation time and never dump historical matches into DMs. `/alerts preview` searches the current catalog without changing that baseline. Daily digests contain at most eight jobs per message and continue in bounded batches when a day has an unusually large number of matches.
 
+`/alerts roles` is the broad, shared notification layer. Stentor creates roles only when a member requests them, keeps them non-hoisted and non-mentionable by humans, and pings only the exact program + cycle role for a newly eligible job. Role selection never backfills old jobs. Fine-grained filters remain private DM alerts so the server does not accumulate a role for every keyword or location combination.
+
 ## Architecture
 
 ```mermaid
@@ -65,7 +68,7 @@ flowchart LR
     A["Discord admin"] -->|"/job-admin post"| S
     S --> P[("PostgreSQL")]
     P --> Q["Durable refresh queue"]
-    Q --> D["Pinned live board"]
+    Q --> D["Pinned live board + opt-in role pings"]
     Q --> F["Optional announcement feed"]
     P --> N["Personal alert worker"]
     N --> M["Private member DMs"]

@@ -180,14 +180,29 @@ describe("Announcer live-board batching", () => {
     }));
     const markAnnouncementSent = vi.fn().mockResolvedValue(undefined);
     const markAnnouncementFailed = vi.fn().mockResolvedValue(undefined);
+    const roleNotificationSend = vi.fn().mockResolvedValue({ id: "role-notification" });
     const repository = {
       listPendingAnnouncements: vi.fn().mockResolvedValue(queued),
+      listMatchingNotificationRoles: vi
+        .fn()
+        .mockImplementation((_guildId, queuedJob: Job) =>
+          Promise.resolve(queuedJob.id === "job-1" ? ["role-1"] : []),
+        ),
       markAnnouncementSent,
       markAnnouncementFailed,
     } as unknown as Repository;
     const board = { refresh: vi.fn().mockResolvedValue("board-message") };
     const announcer = new Announcer(
-      { isReady: () => true } as never,
+      {
+        isReady: () => true,
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            type: ChannelType.GuildText,
+            isTextBased: () => true,
+            send: roleNotificationSend,
+          }),
+        },
+      } as never,
       repository,
       createLogger({ LOG_LEVEL: "silent", NODE_ENV: "test" }),
       createMetrics(),
@@ -201,5 +216,9 @@ describe("Announcer live-board batching", () => {
     expect(markAnnouncementSent).toHaveBeenCalledTimes(2);
     expect(markAnnouncementSent).toHaveBeenCalledWith("guild-1", "job-1", "board-message");
     expect(markAnnouncementSent).toHaveBeenCalledWith("guild-1", "job-2", "board-message");
+    expect(roleNotificationSend).toHaveBeenCalledOnce();
+    expect(roleNotificationSend).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "<@&role-1>", allowedMentions: { roles: ["role-1"] } }),
+    );
   });
 });

@@ -8,10 +8,18 @@ import {
   type ChatInputCommandInteraction,
   type Client,
   type Interaction,
+  type StringSelectMenuInteraction,
 } from "discord.js";
 import type { Repository } from "../db/repository.js";
 import type { GuildSettings, Job } from "../db/schema.js";
 import { normalizeCsv } from "../domain/filter.js";
+import {
+  NOTIFICATION_ROLE_NONE,
+  notificationCategoryKey,
+  notificationRoleName,
+  parseNotificationCategoryKey,
+  type NotificationCategory,
+} from "../domain/notification-role.js";
 import { nextDigestAt, supportedTimezones, type SupportedTimezone } from "../domain/schedule.js";
 import type { JobSearchFilters } from "../domain/search.js";
 import { validatePublicHttpsUrl } from "../domain/url.js";
@@ -20,6 +28,7 @@ import {
   boardHelpContainer,
   jobEmbed,
   jobBrowserContainer,
+  notificationRolePicker,
   searchNavigation,
   subscriptionEmbed,
 } from "./presentation.js";
@@ -362,6 +371,42 @@ async function handleAlerts(
   const userId = interaction.user.id;
   const subcommand = interaction.options.getSubcommand();
 
+  if (subcommand === "roles") {
+    const settings = await dependencies.repository.getGuildSettings(guildId);
+    if (!settings) throw new Error("An administrator must configure Stentor first.");
+    if (!interaction.guild?.members.me?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      throw new Error("Stentor needs Manage Roles to offer opt-in channel pings.");
+    }
+    const [available, selected] = await Promise.all([
+      dependencies.repository.listAvailableNotificationCategories(guildId),
+      dependencies.repository.listUserNotificationCategories(guildId, userId),
+    ]);
+    const selectedKeys = new Set(selected.map(notificationCategoryKey));
+    const categories = available
+      .filter(
+        (category) =>
+          (settings.programs.length === 0 || settings.programs.includes(category.program)) &&
+          (settings.cycles.length === 0 || settings.cycles.includes(category.cycle)),
+      )
+      .sort((left, right) => {
+        const selectedOrder =
+          Number(selectedKeys.has(notificationCategoryKey(right))) -
+          Number(selectedKeys.has(notificationCategoryKey(left)));
+        return (
+          selectedOrder ||
+          notificationCategoryKey(left).localeCompare(notificationCategoryKey(right))
+        );
+      })
+      .slice(0, 24);
+    await interaction.reply({
+      content:
+        "Choose broad channel pings below. For keywords, location, remote work, sponsorship, timing, and daily delivery, use `/alerts create` for a private DM alert.",
+      components: [notificationRolePicker(categories, selected)],
+      flags: ephemeral,
+    });
+    return;
+  }
+
   if (subcommand === "create") {
     const name = interaction.options.getString("name", true).trim();
     if (!name) throw new Error("Alert name cannot be blank.");
@@ -425,9 +470,12 @@ async function handleAlerts(
     if (!interaction.options.getBoolean("confirm", true)) {
       throw new Error("Set confirm to True to permanently delete your personal data.");
     }
-    const deleted = await dependencies.repository.deleteUserSubscriptions(userId);
+    const [deleted, deletedRoleChoices] = await Promise.all([
+      dependencies.repository.deleteUserSubscriptions(userId),
+      dependencies.repository.deleteUserNotificationCategories(userId),
+    ]);
     await interaction.reply({
-      content: `Deleted ${deleted} personal alert${deleted === 1 ? "" : "s"} and all associated delivery history.`,
+      content: `Deleted ${deleted} personal alert${deleted === 1 ? "" : "s"}, ${deletedRoleChoices} role choice${deletedRoleChoices === 1 ? "" : "s"}, and all associated delivery history. Run \`/alerts roles\` in any server where you also want the visible Discord role removed.`,
       flags: ephemeral,
     });
     return;
@@ -477,6 +525,93 @@ async function handleAlerts(
       flags: ephemeral,
     });
   }
+}
+
+async function handleNotificationRoleSelection(
+  interaction: StringSelectMenuInteraction,
+  dependencies: HandlerDependencies,
+): Promise<void> {
+  if (!interaction.guildId || !interaction.guild) {
+    throw new Error("Notification roles can only be managed in a server.");
+  }
+  const guild = interaction.guild;
+  const botMember = guild.members.me;
+  if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    throw new Error("Stentor needs Manage Roles to update notification roles.");
+  }
+  const requested: NotificationCategory[] = interaction.values.includes(NOTIFICATION_ROLE_NONE)
+    ? []
+    : interaction.values.map((value) => {
+        const parsed = parseNotificationCategoryKey(value);
+        if (!parsed) throw new Error("That notification category is invalid.");
+        return parsed;
+      });
+  const settings = await dependencies.repository.getGuildSettings(guild.id);
+  if (!settings) throw new Error("An administrator must configure Stentor first.");
+  const available = await dependencies.repository.listAvailableNotificationCategories(guild.id);
+  const validKeys = new Set(
+    available
+      .filter(
+        (category) =>
+          (settings.programs.length === 0 || settings.programs.includes(category.program)) &&
+          (settings.cycles.length === 0 || settings.cycles.includes(category.cycle)),
+      )
+      .map(notificationCategoryKey),
+  );
+  if (requested.some((category) => !validKeys.has(notificationCategoryKey(category)))) {
+    throw new Error("One of those notification categories is no longer available.");
+  }
+
+  await interaction.deferUpdate();
+  const member = await guild.members.fetch(interaction.user.id);
+  const discordRoles = await guild.roles.fetch();
+  const managed = await dependencies.repository.listNotificationRoles(guild.id);
+  const mappings = new Map(managed.map((role) => [notificationCategoryKey(role), role]));
+  const selectedRoleIds: string[] = [];
+  for (const category of requested) {
+    const key = notificationCategoryKey(category);
+    let mapping = mappings.get(key);
+    let role = mapping ? discordRoles.get(mapping.roleId) : null;
+    if (!role) {
+      role = await guild.roles.create({
+        name: notificationRoleName(category),
+        permissions: [],
+        hoist: false,
+        mentionable: false,
+        reason: `Stentor notification role requested by ${interaction.user.id}`,
+      });
+      mapping = await dependencies.repository.saveNotificationRole(
+        guild.id,
+        category.program,
+        category.cycle,
+        role.id,
+      );
+      mappings.set(key, mapping);
+    }
+    selectedRoleIds.push(role.id);
+  }
+  const managedRoleIds = managed
+    .map((role) => role.roleId)
+    .filter((roleId) => discordRoles.has(roleId));
+  const rolesToRemove = managedRoleIds.filter((roleId) => !selectedRoleIds.includes(roleId));
+  if (selectedRoleIds.length > 0) {
+    await member.roles.add(selectedRoleIds, "Member updated Stentor notification preferences");
+  }
+  if (rolesToRemove.length > 0) {
+    await member.roles.remove(rolesToRemove, "Member updated Stentor notification preferences");
+  }
+  await dependencies.repository.replaceUserNotificationCategories(
+    guild.id,
+    interaction.user.id,
+    requested,
+  );
+  await interaction.editReply({
+    content:
+      requested.length > 0
+        ? `Saved ${requested.length} opt-in channel ping${requested.length === 1 ? "" : "s"}. Use \`/alerts roles\` any time to change them.`
+        : "Channel pings are off. Your private DM alerts are unchanged.",
+    components: [],
+  });
 }
 
 async function handleAutocomplete(
@@ -587,6 +722,8 @@ export function createInteractionHandler(dependencies: HandlerDependencies) {
         await handleCommand(interaction, dependencies, searchSessions);
       } else if (interaction.isButton()) {
         await handleButton(interaction, dependencies.repository, searchSessions);
+      } else if (interaction.isStringSelectMenu() && interaction.customId === "alerts:roles") {
+        await handleNotificationRoleSelection(interaction, dependencies);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Something went wrong.";

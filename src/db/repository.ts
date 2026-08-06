@@ -3,6 +3,7 @@ import { and, asc, desc, eq, ilike, inArray, isNotNull, lt, lte, or, sql } from 
 import type { KeryxJob } from "../domain/keryx.js";
 import { dateAtUtcMidnight } from "../domain/keryx.js";
 import { jobMatchInputsChanged } from "../domain/filter.js";
+import type { NotificationCategory } from "../domain/notification-role.js";
 import type { JobSearchFilters } from "../domain/search.js";
 import type { Database } from "./client.js";
 import {
@@ -10,6 +11,8 @@ import {
   guildSettings,
   jobFanoutEvents,
   jobs,
+  notificationRoleMemberships,
+  notificationRoles,
   subscriptionDeliveries,
   subscriptions,
   syncState,
@@ -17,6 +20,7 @@ import {
   type Job,
   type JobMatchSnapshot,
   type NewJob,
+  type NotificationRole,
   type Subscription,
 } from "./schema.js";
 
@@ -572,6 +576,138 @@ export class Repository {
       .where(and(eq(announcements.guildId, guildId), eq(announcements.jobId, jobId)))
       .limit(1);
     return announcement ?? null;
+  }
+
+  async listAvailableNotificationCategories(guildId: string): Promise<NotificationCategory[]> {
+    return this.db
+      .selectDistinct({ program: jobs.program, cycle: jobs.cycle })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.status, "open"),
+          or(eq(jobs.source, KERYX_SOURCE), eq(jobs.ownerGuildId, guildId)),
+        ),
+      )
+      .orderBy(asc(jobs.program), asc(jobs.cycle));
+  }
+
+  async listNotificationRoles(guildId: string): Promise<NotificationRole[]> {
+    return this.db.select().from(notificationRoles).where(eq(notificationRoles.guildId, guildId));
+  }
+
+  async getNotificationRole(
+    guildId: string,
+    program: string,
+    cycle: string,
+  ): Promise<NotificationRole | null> {
+    const [role] = await this.db
+      .select()
+      .from(notificationRoles)
+      .where(
+        and(
+          eq(notificationRoles.guildId, guildId),
+          eq(notificationRoles.program, program),
+          eq(notificationRoles.cycle, cycle),
+        ),
+      )
+      .limit(1);
+    return role ?? null;
+  }
+
+  async saveNotificationRole(
+    guildId: string,
+    program: string,
+    cycle: string,
+    roleId: string,
+  ): Promise<NotificationRole> {
+    const [role] = await this.db
+      .insert(notificationRoles)
+      .values({ guildId, program, cycle, roleId })
+      .onConflictDoUpdate({
+        target: [notificationRoles.guildId, notificationRoles.program, notificationRoles.cycle],
+        set: { roleId },
+      })
+      .returning();
+    if (!role) throw new Error("Notification role was not saved");
+    return role;
+  }
+
+  async replaceUserNotificationCategories(
+    guildId: string,
+    userId: string,
+    categories: NotificationCategory[],
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .delete(notificationRoleMemberships)
+        .where(
+          and(
+            eq(notificationRoleMemberships.guildId, guildId),
+            eq(notificationRoleMemberships.userId, userId),
+          ),
+        );
+      if (categories.length > 0) {
+        await tx.insert(notificationRoleMemberships).values(
+          categories.map((category) => ({
+            guildId,
+            userId,
+            program: category.program,
+            cycle: category.cycle,
+          })),
+        );
+      }
+    });
+  }
+
+  async listUserNotificationCategories(
+    guildId: string,
+    userId: string,
+  ): Promise<NotificationCategory[]> {
+    return this.db
+      .select({
+        program: notificationRoleMemberships.program,
+        cycle: notificationRoleMemberships.cycle,
+      })
+      .from(notificationRoleMemberships)
+      .where(
+        and(
+          eq(notificationRoleMemberships.guildId, guildId),
+          eq(notificationRoleMemberships.userId, userId),
+        ),
+      );
+  }
+
+  async deleteUserNotificationCategories(userId: string): Promise<number> {
+    const deleted = await this.db
+      .delete(notificationRoleMemberships)
+      .where(eq(notificationRoleMemberships.userId, userId))
+      .returning({ userId: notificationRoleMemberships.userId });
+    return deleted.length;
+  }
+
+  async listMatchingNotificationRoles(
+    guildId: string,
+    job: Pick<Job, "program" | "cycle">,
+  ): Promise<string[]> {
+    const rows = await this.db
+      .selectDistinct({ roleId: notificationRoles.roleId })
+      .from(notificationRoles)
+      .innerJoin(
+        notificationRoleMemberships,
+        and(
+          eq(notificationRoleMemberships.guildId, notificationRoles.guildId),
+          eq(notificationRoleMemberships.program, notificationRoles.program),
+          eq(notificationRoleMemberships.cycle, notificationRoles.cycle),
+        ),
+      )
+      .where(
+        and(
+          eq(notificationRoles.guildId, guildId),
+          eq(notificationRoles.program, job.program),
+          eq(notificationRoles.cycle, job.cycle),
+        ),
+      );
+    return rows.map((row) => row.roleId);
   }
 
   async saveSubscription(input: SubscriptionInput): Promise<Subscription> {

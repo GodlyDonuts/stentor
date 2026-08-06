@@ -50,6 +50,13 @@
       "when": 1786047259625,
       "tag": "0006_easy_christian_walker",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786050944315,
+      "tag": "0007_cold_ben_grimm",
+      "breakpoints": true
     }
   ]
 }

@@ -213,6 +213,9 @@ export const commands = [
     .setDescription("Create and manage personal job alerts")
     .setDMPermission(false)
     .addSubcommand((subcommand) =>
+      subcommand.setName("roles").setDescription("Choose opt-in roles for relevant channel pings"),
+    )
+    .addSubcommand((subcommand) =>
       subcommand
         .setName("create")
         .setDescription("Create or replace a private job alert")
