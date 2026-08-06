@@ -58,6 +58,8 @@ Filters are **OR within a category** and **AND across categories**. An alert wit
 
 New alerts start at creation time and never dump historical matches into DMs. `/alerts preview` searches the current catalog without changing that baseline. Daily digests contain at most eight jobs per message and continue in bounded batches when a day has an unusually large number of matches.
 
+Personal DM alerts always search the full Keryx catalog independently of the server's public configuration. For example, an administrator can keep the official board internships-only while a member privately subscribes to 2027 new-graduate roles.
+
 `/alerts roles` is the broad, shared notification layer. Stentor creates roles only when a member requests them, keeps them non-hoisted and non-mentionable by humans, and pings only the exact program + cycle role for a newly eligible job. Role selection never backfills old jobs. Fine-grained filters remain private DM alerts so the server does not accumulate a role for every keyword or location combination.
 
 ## Architecture

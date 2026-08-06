@@ -58,6 +58,40 @@ describe("subscriptionMatches", () => {
 });
 
 describe("SubscriptionMatcher", () => {
+  it("queues a member's new-grad DM independently of an internships-only public feed", async () => {
+    const newGradSubscription = {
+      ...subscription,
+      id: "new-grad-subscription",
+      name: "New graduate roles",
+      programs: ["new-grad"],
+      cycles: ["2027"],
+      keywords: [],
+      locations: [],
+      remoteOnly: false,
+    } as Subscription;
+    const newGradJob = {
+      ...job,
+      id: "new-grad-job",
+      title: "Software Engineer — New Graduate",
+      program: "new-grad",
+      cycle: "2027",
+    } as Job;
+    const enqueue = vi.fn().mockResolvedValue(1);
+    const getGuildSettings = vi.fn().mockResolvedValue({ programs: ["internship"] });
+    const repository = {
+      getGuildSettings,
+      listActiveSubscriptions: vi.fn().mockResolvedValue([newGradSubscription]),
+      enqueueSubscriptionDeliveries: enqueue,
+    } as unknown as Repository;
+
+    await new SubscriptionMatcher(repository).enqueueChanges([{ before: null, after: newGradJob }]);
+
+    expect(getGuildSettings).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith([
+      { subscriptionId: newGradSubscription.id, jobId: newGradJob.id },
+    ]);
+  });
+
   it("queues a job when a Keryx update makes it newly eligible", async () => {
     const enqueue = vi.fn().mockResolvedValue(1);
     const repository = {
