@@ -6,12 +6,13 @@ Stentor is a job-discovery and delivery system. It does not accept applications,
 
 ## Delivery model
 
-There are two independent durable queues in PostgreSQL:
+There are three durable delivery stages in PostgreSQL:
 
-1. Public announcements are unique by `(guild, job)` and carry message IDs so closures can update the original Discord message.
-2. Personal deliveries are unique by `(subscription, job)`. A subscription can send immediate private batches or timezone-aware daily digests.
+1. Keryx inserts and filter-relevant updates create a transactional fan-out event. An event is acknowledged only after public and personal queue writes succeed, so a process crash cannot lose a newly eligible job.
+2. Public announcements are unique by `(guild, job)` and carry message IDs so closures can update the original Discord message.
+3. Personal deliveries are unique by `(subscription, job)`. A subscription can send immediate private batches or timezone-aware daily digests.
 
-Both queues use bounded retry schedules and terminal states. A first Keryx synchronization creates a baseline and never generates deliveries. New subscription creation also starts from “now”; preview is a read-only catalog query.
+The delivery queues use bounded retry schedules and terminal states. A first Keryx synchronization creates a baseline and never generates fan-out events. Existing jobs are reconsidered only when a field that can change filter eligibility changes—for example, when Keryx promotes a withheld URL to a corroborated application link. New subscription creation also starts from “now”; preview is a read-only catalog query.
 
 Filter values are normalized at the command boundary. Values within one category are alternatives; categories combine conjunctively. Community jobs only match subscriptions from their owning guild.
 

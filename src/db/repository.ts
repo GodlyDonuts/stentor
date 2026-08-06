@@ -2,22 +2,38 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, ilike, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import type { KeryxJob } from "../domain/keryx.js";
 import { dateAtUtcMidnight } from "../domain/keryx.js";
+import { jobMatchInputsChanged } from "../domain/filter.js";
 import type { JobSearchFilters } from "../domain/search.js";
 import type { Database } from "./client.js";
 import {
   announcements,
   guildSettings,
+  jobFanoutEvents,
   jobs,
   subscriptionDeliveries,
   subscriptions,
   syncState,
   type GuildSettings,
   type Job,
+  type JobMatchSnapshot,
   type NewJob,
   type Subscription,
 } from "./schema.js";
 
 const KERYX_SOURCE = "keryx";
+
+function jobMatchSnapshot(job: Job): JobMatchSnapshot {
+  return {
+    status: job.status,
+    company: job.company,
+    title: job.title,
+    location: job.location,
+    program: job.program,
+    cycle: job.cycle,
+    url: job.url,
+    sponsorship: job.sponsorship,
+  };
+}
 
 export interface GuildConfiguration {
   guildId: string;
@@ -62,6 +78,11 @@ export interface SubscriptionInput {
   timezone: string;
   digestHour: number;
   nextDigestAt: Date;
+}
+
+export interface KeryxJobChange {
+  before: Job | null;
+  after: Job;
 }
 
 export class Repository {
@@ -159,7 +180,7 @@ export class Repository {
   async upsertKeryxJobs(
     input: KeryxJob[],
     etag: string | null,
-  ): Promise<{ jobs: Job[]; closed: Job[]; baseline: boolean }> {
+  ): Promise<{ jobs: Job[]; updated: KeryxJobChange[]; closed: Job[]; baseline: boolean }> {
     return this.db.transaction(async (tx) => {
       const [state] = await tx
         .select()
@@ -168,18 +189,16 @@ export class Repository {
         .limit(1);
       const baseline = !(state?.baselineComplete ?? false);
       const ids = input.map((job) => job.id);
-      const known = new Map<string, string>();
+      const known = new Map<string, Job>();
       for (let offset = 0; offset < ids.length; offset += 5_000) {
         const chunk = ids.slice(offset, offset + 5_000);
         if (chunk.length === 0) continue;
-        const found = await tx
-          .select({ id: jobs.id, status: jobs.status })
-          .from(jobs)
-          .where(inArray(jobs.id, chunk));
-        found.forEach((row) => known.set(row.id, row.status));
+        const found = await tx.select().from(jobs).where(inArray(jobs.id, chunk));
+        found.forEach((row) => known.set(row.id, row));
       }
 
       const inserted: Job[] = [];
+      const updated: Array<{ before: Job; after: Job }> = [];
       for (let offset = 0; offset < input.length; offset += 500) {
         const chunk = input.slice(offset, offset + 500);
         const values: NewJob[] = chunk.map((job) => ({
@@ -225,7 +244,24 @@ export class Repository {
             },
           })
           .returning();
-        inserted.push(...returned.filter((job) => !known.has(job.id)));
+        for (const job of returned) {
+          const before = known.get(job.id);
+          if (!before) inserted.push(job);
+          else if (jobMatchInputsChanged(before, job)) updated.push({ before, after: job });
+        }
+      }
+
+      if (!baseline) {
+        const events = [
+          ...inserted.map((job) => ({ jobId: job.id, before: null })),
+          ...updated.map((change) => ({
+            jobId: change.after.id,
+            before: jobMatchSnapshot(change.before),
+          })),
+        ];
+        if (events.length > 0) {
+          await tx.insert(jobFanoutEvents).values(events).onConflictDoNothing();
+        }
       }
 
       await tx
@@ -253,12 +289,30 @@ export class Repository {
           },
         });
       const closedIds = input
-        .filter((job) => job.status === "closed" && known.get(job.id) === "open")
+        .filter((job) => job.status === "closed" && known.get(job.id)?.status === "open")
         .map((job) => job.id);
       const closed =
         closedIds.length > 0 ? await tx.select().from(jobs).where(inArray(jobs.id, closedIds)) : [];
-      return { jobs: inserted, closed, baseline };
+      return { jobs: inserted, updated, closed, baseline };
     });
+  }
+
+  async listPendingKeryxJobChanges(limit = 5_000): Promise<KeryxJobChange[]> {
+    const rows = await this.db
+      .select({ event: jobFanoutEvents, job: jobs })
+      .from(jobFanoutEvents)
+      .innerJoin(jobs, eq(jobs.id, jobFanoutEvents.jobId))
+      .orderBy(asc(jobFanoutEvents.createdAt))
+      .limit(limit);
+    return rows.map(({ event, job }) => ({
+      before: event.before ? { ...job, ...event.before } : null,
+      after: job,
+    }));
+  }
+
+  async deleteKeryxJobChanges(jobIds: string[]): Promise<void> {
+    if (jobIds.length === 0) return;
+    await this.db.delete(jobFanoutEvents).where(inArray(jobFanoutEvents.jobId, jobIds));
   }
 
   async createAdminJob(input: AdminJobInput): Promise<Job> {

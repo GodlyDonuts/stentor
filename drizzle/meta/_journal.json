@@ -36,6 +36,13 @@
       "when": 1785621020156,
       "tag": "0004_cute_shooting_star",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786035140877,
+      "tag": "0005_motionless_lyja",
+      "breakpoints": true
     }
   ]
 }

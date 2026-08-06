@@ -11,6 +11,17 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+export interface JobMatchSnapshot {
+  status: string;
+  company: string;
+  title: string;
+  location: string;
+  program: string;
+  cycle: string;
+  url: string | null;
+  sponsorship: string | null;
+}
+
 export const guildSettings = pgTable("guild_settings", {
   guildId: text("guild_id").primaryKey(),
   channelId: text("channel_id").notNull(),
@@ -60,6 +71,14 @@ export const jobs = pgTable(
     index("jobs_program_cycle_idx").on(table.program, table.cycle),
   ],
 );
+
+export const jobFanoutEvents = pgTable("job_fanout_events", {
+  jobId: text("job_id")
+    .primaryKey()
+    .references(() => jobs.id, { onDelete: "cascade" }),
+  before: jsonb("before").$type<JobMatchSnapshot | null>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const announcements = pgTable(
   "announcements",

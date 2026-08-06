@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Job } from "../src/db/schema.js";
-import { matchesFilter, normalizeCsv, type JobFilter } from "../src/domain/filter.js";
+import {
+  jobMatchInputsChanged,
+  matchesFilter,
+  normalizeCsv,
+  type JobFilter,
+} from "../src/domain/filter.js";
 
 const job = {
   status: "open",
@@ -61,6 +66,12 @@ describe("job filtering", () => {
         { ...filter, sponsorship: "no-sponsorship" },
       ),
     ).toBe(true);
+  });
+
+  it("detects changes that can alter filter eligibility", () => {
+    expect(jobMatchInputsChanged({ ...job, url: null }, job)).toBe(true);
+    expect(jobMatchInputsChanged(job, { ...job, cycle: "fall-2026" })).toBe(true);
+    expect(jobMatchInputsChanged(job, { ...job })).toBe(false);
   });
 });
 

@@ -29,6 +29,31 @@ export class Synchronizer {
     if (this.timer) clearInterval(this.timer);
   }
 
+  private async fanOutPendingChanges(): Promise<number> {
+    const changes = await this.repository.listPendingKeryxJobChanges();
+    if (changes.length === 0) return 0;
+    const guilds = await this.repository.listActiveGuilds();
+    let newlyEligible = 0;
+    for (const change of changes) {
+      for (const guild of guilds) {
+        const filter = settingsToFilter(guild);
+        const matchesNow = matchesFilter(change.after, filter);
+        const matchedBefore = change.before ? matchesFilter(change.before, filter) : false;
+        if (matchesNow && !matchedBefore) {
+          await this.repository.enqueueAnnouncement(
+            guild.guildId,
+            guild.channelId,
+            change.after.id,
+          );
+          newlyEligible += 1;
+        }
+      }
+    }
+    await this.subscriptionMatcher.enqueueChanges(changes);
+    await this.repository.deleteKeryxJobChanges(changes.map((change) => change.after.id));
+    return newlyEligible;
+  }
+
   async run(): Promise<{ changed: boolean; discovered: number; baseline: boolean }> {
     if (this.running) return { changed: false, discovered: 0, baseline: false };
     this.running = true;
@@ -44,6 +69,7 @@ export class Synchronizer {
       const result = await this.client.fetch(state?.etag);
       if (!result.changed) {
         await this.repository.markSyncChecked(result.etag);
+        await this.fanOutPendingChanges();
         this.metrics.syncs.inc({ result: "not_modified" });
         return { changed: false, discovered: 0, baseline: false };
       }
@@ -53,21 +79,13 @@ export class Synchronizer {
       await this.repository.closePendingSubscriptionDeliveries(
         upserted.closed.map((job) => job.id),
       );
-      if (!upserted.baseline && upserted.jobs.length > 0) {
-        const guilds = await this.repository.listActiveGuilds();
-        for (const job of upserted.jobs) {
-          for (const guild of guilds) {
-            if (matchesFilter(job, settingsToFilter(guild))) {
-              await this.repository.enqueueAnnouncement(guild.guildId, guild.channelId, job.id);
-            }
-          }
-        }
-        await this.subscriptionMatcher.enqueue(upserted.jobs);
-      }
+      const newlyEligible = await this.fanOutPendingChanges();
       this.metrics.syncs.inc({ result: "success" });
       this.logger.info(
         {
           discovered: upserted.jobs.length,
+          updated: upserted.updated.length,
+          newlyEligible,
           total: result.payload.jobs.length,
           baseline: upserted.baseline,
         },

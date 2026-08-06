@@ -1,4 +1,4 @@
-import type { GuildSettings, Job } from "../db/schema.js";
+import type { GuildSettings, JobMatchSnapshot } from "../db/schema.js";
 
 export interface JobFilter {
   programs: string[];
@@ -9,6 +9,8 @@ export interface JobFilter {
   remoteOnly?: boolean;
   sponsorship?: string;
 }
+
+export type MatchableJob = JobMatchSnapshot;
 
 function includesAny(haystack: string, needles: string[]): boolean {
   const normalized = haystack.toLocaleLowerCase("en-US");
@@ -28,7 +30,7 @@ export function normalizeCsv(value: string | null | undefined, limit = 10): stri
   ];
 }
 
-export function matchesFilter(job: Job, filter: JobFilter): boolean {
+export function matchesFilter(job: MatchableJob, filter: JobFilter): boolean {
   if (job.status !== "open") return false;
   if (filter.requireLink && job.url === null) return false;
   if (filter.programs.length > 0 && !filter.programs.includes(job.program)) return false;
@@ -57,6 +59,19 @@ export function matchesFilter(job: Job, filter: JobFilter): boolean {
     }
   }
   return true;
+}
+
+export function jobMatchInputsChanged(before: MatchableJob, after: MatchableJob): boolean {
+  return (
+    before.status !== after.status ||
+    before.company !== after.company ||
+    before.title !== after.title ||
+    before.location !== after.location ||
+    before.program !== after.program ||
+    before.cycle !== after.cycle ||
+    before.url !== after.url ||
+    before.sponsorship !== after.sponsorship
+  );
 }
 
 export function settingsToFilter(settings: GuildSettings): JobFilter {

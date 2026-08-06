@@ -1,6 +1,6 @@
 import { DiscordAPIError, type Client } from "discord.js";
 import type { Job, Subscription } from "../db/schema.js";
-import type { Repository } from "../db/repository.js";
+import type { KeryxJobChange, Repository } from "../db/repository.js";
 import { matchesFilter } from "../domain/filter.js";
 import { nextDigestAt } from "../domain/schedule.js";
 import { applicationButton, digestEmbed, jobEmbed } from "../discord/presentation.js";
@@ -24,13 +24,21 @@ export class SubscriptionMatcher {
   public constructor(private readonly repository: Repository) {}
 
   async enqueue(jobs: Job[]): Promise<number> {
-    if (jobs.length === 0) return 0;
+    return this.enqueueChanges(jobs.map((after) => ({ before: null, after })));
+  }
+
+  async enqueueChanges(changes: KeryxJobChange[]): Promise<number> {
+    if (changes.length === 0) return 0;
     const subscriptions = await this.repository.listActiveSubscriptions();
     const deliveries: Array<{ subscriptionId: string; jobId: string }> = [];
-    for (const job of jobs) {
+    for (const change of changes) {
       for (const subscription of subscriptions) {
-        if (subscriptionMatches(subscription, job)) {
-          deliveries.push({ subscriptionId: subscription.id, jobId: job.id });
+        const matchesNow = subscriptionMatches(subscription, change.after);
+        const matchedBefore = change.before
+          ? subscriptionMatches(subscription, change.before)
+          : false;
+        if (matchesNow && !matchedBefore) {
+          deliveries.push({ subscriptionId: subscription.id, jobId: change.after.id });
         }
       }
     }

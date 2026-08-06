@@ -4,7 +4,11 @@ import type { Repository } from "../src/db/repository.js";
 import type { Job, Subscription, SubscriptionDelivery } from "../src/db/schema.js";
 import { createLogger } from "../src/logger.js";
 import { createMetrics } from "../src/metrics.js";
-import { SubscriptionNotifier, subscriptionMatches } from "../src/services/subscriptions.js";
+import {
+  SubscriptionMatcher,
+  SubscriptionNotifier,
+  subscriptionMatches,
+} from "../src/services/subscriptions.js";
 
 const subscription = {
   id: "subscription-1",
@@ -50,6 +54,36 @@ describe("subscriptionMatches", () => {
     expect(
       subscriptionMatches(subscription, { ...job, source: "admin", ownerGuildId: "guild-2" }),
     ).toBe(false);
+  });
+});
+
+describe("SubscriptionMatcher", () => {
+  it("queues a job when a Keryx update makes it newly eligible", async () => {
+    const enqueue = vi.fn().mockResolvedValue(1);
+    const repository = {
+      listActiveSubscriptions: vi.fn().mockResolvedValue([subscription]),
+      enqueueSubscriptionDeliveries: enqueue,
+    } as unknown as Repository;
+    const matcher = new SubscriptionMatcher(repository);
+
+    await matcher.enqueueChanges([{ before: { ...job, url: null }, after: job }]);
+
+    expect(enqueue).toHaveBeenCalledWith([{ subscriptionId: subscription.id, jobId: job.id }]);
+  });
+
+  it("does not requeue an update that matched before and after", async () => {
+    const enqueue = vi.fn().mockResolvedValue(0);
+    const repository = {
+      listActiveSubscriptions: vi.fn().mockResolvedValue([subscription]),
+      enqueueSubscriptionDeliveries: enqueue,
+    } as unknown as Repository;
+    const matcher = new SubscriptionMatcher(repository);
+
+    await matcher.enqueueChanges([
+      { before: job, after: { ...job, title: "Software Engineering Intern (updated)" } },
+    ]);
+
+    expect(enqueue).toHaveBeenCalledWith([]);
   });
 });
 
