@@ -161,7 +161,7 @@ describe("JobBoardPublisher", () => {
 
 describe("Announcer live-board batching", () => {
   it("collapses multiple queued jobs into one board refresh", async () => {
-    const queued = [job, { ...job, id: "job-2" } as Job].map((queuedJob) => ({
+    const queued = [job, { ...job, id: "job-2" }].map((queuedJob) => ({
       job: queuedJob,
       settings,
       announcement: {

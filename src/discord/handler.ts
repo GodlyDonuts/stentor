@@ -192,8 +192,7 @@ async function handleConfigure(
     channelId: channel.id,
     pingRoleId: role?.id ?? null,
     deliveryMode: (interaction.options.getString("display") ?? "board") as
-      | "board"
-      | "announcements",
+      "board" | "announcements",
     programs: selectedProgram === "all" ? [] : [selectedProgram],
     cycles: normalizeCsv(interaction.options.getString("cycles")),
     keywords: normalizeCsv(interaction.options.getString("keywords")),
@@ -313,9 +312,7 @@ async function handleJobAdmin(
       url: checked.url,
       urlHost: checked.host,
       program: interaction.options.getString("program", true) as
-        | "internship"
-        | "new-grad"
-        | "experienced",
+        "internship" | "new-grad" | "experienced",
       description: interaction.options.getString("description")?.trim(),
       cycle: interaction.options.getString("cycle")?.trim().toLocaleLowerCase("en-US"),
       closesAt: expiresInDays ? new Date(Date.now() + expiresInDays * 86_400_000) : null,
@@ -425,8 +422,7 @@ async function handleAlerts(
     if (!supportedTimezones.includes(timezone)) throw new Error("Unsupported timezone.");
     const digestHour = interaction.options.getInteger("digest_hour") ?? 9;
     const deliveryMode = (interaction.options.getString("delivery") ?? "daily") as
-      | "daily"
-      | "immediate";
+      "daily" | "immediate";
     const subscription = await dependencies.repository.saveSubscription({
       guildId,
       userId,

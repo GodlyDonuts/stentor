@@ -75,7 +75,7 @@ describe("SubscriptionMatcher", () => {
       title: "Software Engineer — New Graduate",
       program: "new-grad",
       cycle: "2027",
-    } as Job;
+    };
     const enqueue = vi.fn().mockResolvedValue(1);
     const getGuildSettings = vi.fn().mockResolvedValue({ programs: ["internship"] });
     const repository = {
