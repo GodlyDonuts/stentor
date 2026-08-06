@@ -10,6 +10,7 @@ import {
   TextDisplayBuilder,
   escapeMarkdown,
 } from "discord.js";
+import { academicEligibilitySchema, type AcademicEligibility } from "../domain/keryx.js";
 import type { Job } from "../db/schema.js";
 import type { GuildSettings, Subscription } from "../db/schema.js";
 
@@ -26,6 +27,30 @@ function trim(value: string, length: number): string {
   return value.length <= length ? value : `${value.slice(0, length - 1)}…`;
 }
 
+function academicEligibility(job: Job): AcademicEligibility | null {
+  const parsed = academicEligibilitySchema.safeParse(job.raw?.["academic_eligibility"]);
+  return parsed.success ? parsed.data : null;
+}
+
+function academicEligibilityText(eligibility: AcademicEligibility): string {
+  if (eligibility.status === "unavailable") return "Not available — posting text not indexed";
+  if (eligibility.status === "not-found") return "Not stated in indexed posting text";
+
+  const conditions: string[] = [];
+  if (eligibility.status.startsWith("explicit-") && eligibility.requirement_level) {
+    conditions.push(`${eligibility.requirement_level} graduation timing`);
+  }
+  if (eligibility.currently_enrolled && eligibility.currently_enrolled_level) {
+    conditions.push(`${eligibility.currently_enrolled_level} enrollment`);
+  }
+  if (eligibility.return_to_school && eligibility.return_to_school_level) {
+    conditions.push(`${eligibility.return_to_school_level} return to school`);
+  }
+  return conditions.length > 0
+    ? `${eligibility.summary} · ${conditions.join(" · ")}`
+    : eligibility.summary;
+}
+
 export function formatProgram(program: string): string {
   if (program === "new-grad") return "New graduate";
   return program.charAt(0).toUpperCase() + program.slice(1);
@@ -33,6 +58,7 @@ export function formatProgram(program: string): string {
 
 export function jobEmbed(job: Job): EmbedBuilder {
   const closed = job.status === "closed";
+  const eligibility = academicEligibility(job);
   const embed = new EmbedBuilder()
     .setColor(closed ? 0x6b7280 : (COLORS[job.program as keyof typeof COLORS] ?? 0x6c63ff))
     .setAuthor({
@@ -59,6 +85,13 @@ export function jobEmbed(job: Job): EmbedBuilder {
   if (job.description) embed.setDescription(trim(escapeMarkdown(job.description), 3_500));
   if (job.sponsorship)
     embed.addFields({ name: "Sponsorship", value: trim(job.sponsorship, 1_024), inline: true });
+  if (eligibility) {
+    embed.addFields({
+      name: "Academic eligibility",
+      value: trim(academicEligibilityText(eligibility), 1_024),
+      inline: false,
+    });
+  }
   return embed;
 }
 
@@ -131,7 +164,12 @@ function boardJobText(job: Job, rank?: number): string {
   const title = escapeMarkdown(trim(job.title, 120));
   const location = escapeMarkdown(trim(job.location, 100));
   const prefix = rank ? `${String(rank).padStart(2, "0")} · ` : "";
-  return `### ${prefix}${company}\n**${title}**\n📍 ${location}\n\`${titleCaseCycle(job.cycle).toUpperCase()}\`  \`${formatProgram(job.program).toUpperCase()}\`\n-# ${compactConfidence(job)} · Added <t:${Math.floor(job.firstSeen.getTime() / 1_000)}:R>`;
+  const eligibility = academicEligibility(job);
+  const academicLine =
+    eligibility && !["not-found", "unavailable"].includes(eligibility.status)
+      ? `\n🎓 ${escapeMarkdown(trim(academicEligibilityText(eligibility), 180))}`
+      : "";
+  return `### ${prefix}${company}\n**${title}**\n📍 ${location}\n\`${titleCaseCycle(job.cycle).toUpperCase()}\`  \`${formatProgram(job.program).toUpperCase()}\`${academicLine}\n-# ${compactConfidence(job)} · Added <t:${Math.floor(job.firstSeen.getTime() / 1_000)}:R>`;
 }
 
 function addJobCard(container: ContainerBuilder, job: Job, rank?: number): void {

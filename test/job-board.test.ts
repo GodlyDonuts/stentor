@@ -53,7 +53,23 @@ const job = {
   postedAt: null,
   closesAt: null,
   closedAt: null,
-  raw: {},
+  raw: {
+    academic_eligibility: {
+      extractor_version: 1,
+      status: "explicit-window",
+      summary: "Dec 2026–Jun 2027",
+      confidence: "direct-ats",
+      checked_at: "2026-08-06",
+      source_id: "ats:example",
+      source_label: "ATS",
+      requirement_level: "required",
+      evidence: "Candidates must graduate between December 2026 and June 2027.",
+      graduation_evidence: "Candidates must graduate between December 2026 and June 2027.",
+      graduation_years: [2026, 2027],
+      graduation_start: "2026-12",
+      graduation_end: "2027-06",
+    },
+  },
   createdAt: new Date("2026-08-06T00:00:00Z"),
   updatedAt: new Date("2026-08-06T00:00:00Z"),
 } as Job;
@@ -82,6 +98,7 @@ describe("live job board presentation", () => {
     expect(container.accent_color).toBe(0x7c5cff);
     expect(JSON.stringify(container)).toContain("🟢 **LIVE**");
     expect(JSON.stringify(container)).toContain("https://example.com/apply");
+    expect(JSON.stringify(container)).toContain("Dec 2026–Jun 2027 · required graduation timing");
     expect(countComponents(container)).toBeLessThanOrEqual(40);
     expect(JSON.stringify(browser)).toContain("Private explorer");
     expect(

@@ -11,6 +11,7 @@ The name fits the job: Keryx is the herald that discovers opportunities; Stentor
 ## What it does
 
 - Polls Keryx's canonical `data/jobs.json` with HTTP ETags every 15 minutes.
+- Supports Keryx schemas v1 and v2, preserving provenance-aware academic eligibility metadata and its required/preferred/stated distinction.
 - Creates a safe baseline on first boot instead of dumping the entire historical catalog into Discord.
 - Maintains one pinned live-board message that updates in place instead of flooding a channel.
 - Uses Discord Components V2 for a native dashboard with a branded container, compact job sections, inline Apply buttons, and private explorer pages.
