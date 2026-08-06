@@ -1,5 +1,9 @@
 # Stentor
 
+<p align="center">
+  <img src="assets/stentor-avatar.png" width="128" alt="Stentor herald mark">
+</p>
+
 Stentor is a Discord-native job board powered by [Keryx](https://github.com/GodlyDonuts/keryx). It maintains a live, interactive display of US internships and new-graduate roles, gives members a private search experience, and lets trusted server administrators publish and close community listings.
 
 The name fits the job: Keryx is the herald that discovers opportunities; Stentor is the voice that carries them into a community.
