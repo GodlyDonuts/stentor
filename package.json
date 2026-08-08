@@ -25,7 +25,7 @@
   "dependencies": {
     "discord.js": "14.27.0",
     "drizzle-orm": "0.45.2",
-    "fastify": "5.11.0",
+    "fastify": "5.11.2",
     "pg": "8.22.0",
     "pino": "10.3.1",
     "prom-client": "15.1.3",
